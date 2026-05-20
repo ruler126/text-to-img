@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
   Copy,
@@ -71,6 +71,7 @@ export function App() {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [testState, setTestState] = useState<"idle" | "testing" | "ok" | "fail">("idle");
+  const referenceInputRef = useRef<HTMLInputElement | null>(null);
 
   const template = useMemo(
     () => imageTemplates.find((item) => item.id === job.templateId) ?? imageTemplates[0],
@@ -183,6 +184,18 @@ export function App() {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "参考图处理失败。");
     }
+  };
+
+  const openReferencePicker = () => {
+    if (!referenceInputRef.current) return;
+    referenceInputRef.current.value = "";
+    referenceInputRef.current.click();
+  };
+
+  const handleReferenceInput = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    await handleReferenceUpload(file);
   };
 
   const handleTestConnection = async () => {
@@ -351,6 +364,13 @@ export function App() {
           </div>
 
           <div className="mb-5 grid gap-3 rounded-lg border border-line bg-mist p-3">
+            <input
+              ref={referenceInputRef}
+              className="hidden"
+              type="file"
+              accept="image/png,image/jpeg,image/jpg,image/webp"
+              onChange={handleReferenceInput}
+            />
             <div className="flex flex-wrap gap-2">
               <button
                 className={`mode-button ${job.mode === "text" ? "mode-button-active" : ""}`}
@@ -367,7 +387,7 @@ export function App() {
             </div>
             {job.mode === "reference" && (
               <div className="grid gap-3 md:grid-cols-[180px_minmax(0,1fr)]">
-                <label className="upload-tile">
+                <button className="upload-tile" type="button" onClick={openReferencePicker}>
                   {referenceImage ? (
                     <img src={referenceImage.dataUrl} alt="商品参考图" className="h-full w-full object-contain" />
                   ) : (
@@ -376,13 +396,7 @@ export function App() {
                       上传商品图
                     </span>
                   )}
-                  <input
-                    className="hidden"
-                    type="file"
-                    accept="image/png,image/jpeg,image/jpg,image/webp"
-                    onChange={(event) => handleReferenceUpload(event.target.files?.[0])}
-                  />
-                </label>
+                </button>
                 <div className="flex min-w-0 flex-col justify-between gap-3">
                   <div>
                     <div className="text-sm font-semibold text-slate-700">
@@ -398,16 +412,10 @@ export function App() {
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    <label className="secondary-button cursor-pointer">
+                    <button className="secondary-button" type="button" onClick={openReferencePicker}>
                       <ImageUp size={16} />
                       {referenceImage ? "替换图片" : "选择图片"}
-                      <input
-                        className="hidden"
-                        type="file"
-                        accept="image/png,image/jpeg,image/jpg,image/webp"
-                        onChange={(event) => handleReferenceUpload(event.target.files?.[0])}
-                      />
-                    </label>
+                    </button>
                     <button className="secondary-button" disabled={!referenceImage} onClick={() => setReferenceImage(null)}>
                       <Trash2 size={16} />
                       删除参考图
