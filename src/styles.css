@@ -66,6 +66,18 @@ button:disabled {
     @apply grid aspect-square min-h-40 cursor-pointer place-items-center overflow-hidden rounded-lg border border-dashed border-line bg-white transition hover:border-accent;
   }
 
+  .option-cloud {
+    @apply flex max-h-28 flex-wrap gap-1.5 overflow-auto rounded-lg border border-line bg-white p-2;
+  }
+
+  .option-chip {
+    @apply min-h-8 max-w-full rounded-md border border-line bg-mist px-2.5 text-sm text-slate-600 transition hover:border-accent hover:text-accent;
+  }
+
+  .option-chip-active {
+    @apply border-accent bg-teal-50 text-accent;
+  }
+
   .template-card {
     @apply flex w-full flex-col gap-1 rounded-lg border border-line bg-white p-3 text-left transition hover:border-accent hover:bg-teal-50/40;
   }

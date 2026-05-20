@@ -522,32 +522,20 @@ export function App() {
               />
             </Field>
             <Field label="风格">
-              <input
-                className="input"
-                list="style-options"
+              <ComboInput
                 value={job.style}
-                onChange={(event) => updateJob("style", event.target.value)}
+                options={styles}
                 placeholder="选择或输入风格"
+                onChange={(value) => updateJob("style", value)}
               />
-              <datalist id="style-options">
-                {styles.map((item) => (
-                  <option key={item} value={item} />
-                ))}
-              </datalist>
             </Field>
             <Field label="场景 / 活动">
-              <input
-                className="input"
-                list="scene-options"
+              <ComboInput
                 value={job.scene}
-                onChange={(event) => updateJob("scene", event.target.value)}
+                options={scenes}
                 placeholder="选择或输入场景 / 活动"
+                onChange={(value) => updateJob("scene", value)}
               />
-              <datalist id="scene-options">
-                {scenes.map((item) => (
-                  <option key={item} value={item} />
-                ))}
-              </datalist>
             </Field>
             <Field label="平台规格">
               <select
@@ -805,6 +793,42 @@ function Alert({ tone, message }: { tone: "ok" | "error"; message: string }) {
       }`}
     >
       {message}
+    </div>
+  );
+}
+
+function ComboInput({
+  value,
+  options,
+  placeholder,
+  onChange,
+}: {
+  value: string;
+  options: string[];
+  placeholder: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <input
+        className="input"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+      />
+      <div className="option-cloud">
+        {options.map((item) => (
+          <button
+            className={`option-chip ${value === item ? "option-chip-active" : ""}`}
+            key={item}
+            type="button"
+            onClick={() => onChange(item)}
+            title={item}
+          >
+            {item}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
