@@ -2,6 +2,8 @@ export type TemplateCategory = "main" | "white" | "scene" | "detail" | "promo";
 
 export type ExportFormat = "image/png" | "image/jpeg";
 
+export type GenerateMode = "text" | "reference";
+
 export interface ApiConfig {
   baseURL: string;
   apiKey: string;
@@ -21,6 +23,7 @@ export interface PlatformPreset {
 }
 
 export interface GenerateJob {
+  mode: GenerateMode;
   templateId: string;
   productName: string;
   category: string;
@@ -31,6 +34,15 @@ export interface GenerateJob {
   size: string;
   quality: string;
   extraPrompt: string;
+}
+
+export interface ReferenceImage {
+  blob: Blob;
+  dataUrl: string;
+  fileName: string;
+  width: number;
+  height: number;
+  size: number;
 }
 
 export interface ImageTemplate {
@@ -52,5 +64,8 @@ export interface HistoryItem {
   platformPreset: PlatformPreset;
   imageBlobId: string;
   thumbnailBlobId: string;
+  referenceImageBlobId?: string;
+  referenceThumbnailBlobId?: string;
+  referenceImageName?: string;
   job: GenerateJob;
 }

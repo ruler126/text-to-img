@@ -54,6 +54,18 @@ button:disabled {
     @apply inline-grid h-8 w-8 place-items-center rounded-md border border-line bg-white text-slate-600 transition hover:border-accent hover:text-accent;
   }
 
+  .mode-button {
+    @apply inline-flex min-h-10 items-center rounded-lg border border-line bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition hover:border-accent hover:text-accent;
+  }
+
+  .mode-button-active {
+    @apply border-accent bg-teal-50 text-accent;
+  }
+
+  .upload-tile {
+    @apply grid aspect-square min-h-40 cursor-pointer place-items-center overflow-hidden rounded-lg border border-dashed border-line bg-white transition hover:border-accent;
+  }
+
   .template-card {
     @apply flex w-full flex-col gap-1 rounded-lg border border-line bg-white p-3 text-left transition hover:border-accent hover:bg-teal-50/40;
   }

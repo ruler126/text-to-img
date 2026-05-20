@@ -6,6 +6,14 @@ const HISTORY_KEY = "commerce-ai-history";
 const CONFIG_KEY = "commerce-ai-api-config";
 const MAX_HISTORY = 20;
 
+const itemBlobIds = (entry: HistoryItem) =>
+  [
+    entry.imageBlobId,
+    entry.thumbnailBlobId,
+    entry.referenceImageBlobId,
+    entry.referenceThumbnailBlobId,
+  ].filter(Boolean) as string[];
+
 const openDb = () =>
   new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -58,7 +66,17 @@ export const clearBlobs = async () =>
 
 export const loadHistory = (): HistoryItem[] => {
   try {
-    return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? "[]") as HistoryItem[];
+    const items = JSON.parse(localStorage.getItem(HISTORY_KEY) ?? "[]") as HistoryItem[];
+    return items.map((item) => {
+      const mode = item.job.mode ?? "text";
+      return {
+        ...item,
+        job: {
+          ...item.job,
+          mode,
+        },
+      };
+    });
   } catch {
     return [];
   }
@@ -69,9 +87,7 @@ export const addHistoryItem = async (item: HistoryItem) => {
   const next = [item, ...current];
   const overflow = next.splice(MAX_HISTORY);
   localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
-  await Promise.all(
-    overflow.flatMap((entry) => [deleteBlob(entry.imageBlobId), deleteBlob(entry.thumbnailBlobId)]),
-  );
+  await Promise.all(overflow.flatMap((entry) => itemBlobIds(entry).map((id) => deleteBlob(id))));
   return next;
 };
 

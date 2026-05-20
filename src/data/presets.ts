@@ -67,6 +67,15 @@ const sharedRules = [
   "sharp details, natural lighting, realistic material texture",
 ].join(", ");
 
+const referenceRules = [
+  "Use the uploaded product reference image as the source of truth",
+  "preserve the exact product shape, color, material, logo, label, packaging structure, and key details",
+  "do not redesign the product itself",
+  "only improve the background, lighting, composition, scene, and commercial presentation",
+].join(", ");
+
+const modeRules = (job: { mode: string }) => (job.mode === "reference" ? `${referenceRules}, ` : "");
+
 export const imageTemplates: ImageTemplate[] = [
   {
     id: "main-clean",
@@ -75,7 +84,7 @@ export const imageTemplates: ImageTemplate[] = [
     defaultSize: "1024x1024",
     description: "突出商品主体，适合列表和搜索结果展示。",
     promptBuilder: (job, preset) =>
-      `Create a ${preset.ratio} ecommerce main product image for ${clean(job.productName, "the product")}. Category: ${clean(job.category, "general merchandise")}. Selling points: ${clean(job.sellingPoints, "premium quality and practical design")}. Style: ${clean(job.style, "clean modern commercial")}. Use a simple bright background, centered product, strong but natural shadows, enough empty margin, ${sharedRules}. Output should match ${preset.platform} ${preset.label}. Extra request: ${clean(job.extraPrompt, "none")}.`,
+      `${modeRules(job)}Create a ${preset.ratio} ecommerce main product image for ${clean(job.productName, "the product")}. Category: ${clean(job.category, "general merchandise")}. Selling points: ${clean(job.sellingPoints, "premium quality and practical design")}. Style: ${clean(job.style, "clean modern commercial")}. Use a simple bright background, centered product, strong but natural shadows, enough empty margin, ${sharedRules}. Output should match ${preset.platform} ${preset.label}. Extra request: ${clean(job.extraPrompt, "none")}.`,
   },
   {
     id: "white-background",
@@ -84,7 +93,7 @@ export const imageTemplates: ImageTemplate[] = [
     defaultSize: "1024x1024",
     description: "生成干净白底效果，便于上架和二次编辑。",
     promptBuilder: (job, preset) =>
-      `Generate a ${preset.ratio} white-background ecommerce product image for ${clean(job.productName, "the product")}. Category: ${clean(job.category, "general merchandise")}. Show the full product clearly on pure white or very light neutral background, soft contact shadow, accurate color, no props unless necessary, ${sharedRules}. Selling points to imply visually: ${clean(job.sellingPoints, "clean quality and reliable build")}. Platform target: ${preset.platform}, ${preset.label}. Extra request: ${clean(job.extraPrompt, "none")}.`,
+      `${modeRules(job)}Generate a ${preset.ratio} white-background ecommerce product image for ${clean(job.productName, "the product")}. Category: ${clean(job.category, "general merchandise")}. Remove the original background and keep the real product appearance, clean white background, soft contact shadow, accurate color, no props unless necessary, ${sharedRules}. Selling points to imply visually: ${clean(job.sellingPoints, "clean quality and reliable build")}. Platform target: ${preset.platform}, ${preset.label}. Extra request: ${clean(job.extraPrompt, "none")}.`,
   },
   {
     id: "lifestyle-scene",
@@ -93,7 +102,7 @@ export const imageTemplates: ImageTemplate[] = [
     defaultSize: "1024x1024",
     description: "把商品放入真实使用环境，增强购买想象。",
     promptBuilder: (job, preset) =>
-      `Create a realistic ${preset.ratio} lifestyle scene image for ${clean(job.productName, "the product")}. Scene: ${clean(job.scene, "modern home lifestyle setting")}. Category: ${clean(job.category, "consumer product")}. Highlight these selling points: ${clean(job.sellingPoints, "beautiful design and convenient use")}. Style: ${clean(job.style, "warm modern realistic")}. Product should be visually prominent and believable in the scene, ${sharedRules}. Platform target: ${preset.platform}, ${preset.label}. Extra request: ${clean(job.extraPrompt, "none")}.`,
+      `${modeRules(job)}Create a realistic ${preset.ratio} lifestyle scene image for ${clean(job.productName, "the product")}. Scene: ${clean(job.scene, "modern home lifestyle setting")}. Category: ${clean(job.category, "consumer product")}. Highlight these selling points: ${clean(job.sellingPoints, "beautiful design and convenient use")}. Style: ${clean(job.style, "warm modern realistic")}. Product should be visually prominent and believable in the scene, ${sharedRules}. Platform target: ${preset.platform}, ${preset.label}. Extra request: ${clean(job.extraPrompt, "none")}.`,
   },
   {
     id: "detail-selling-point",
@@ -102,7 +111,7 @@ export const imageTemplates: ImageTemplate[] = [
     defaultSize: "1024x1536",
     description: "适合详情页模块、功能解释和使用步骤配图。",
     promptBuilder: (job, preset) =>
-      `Design a ${preset.ratio} ecommerce detail-page visual for ${clean(job.productName, "the product")}. Category: ${clean(job.category, "general merchandise")}. Communicate these product benefits visually without relying on readable text: ${clean(job.sellingPoints, "quality, durability, ease of use")}. Layout should feel like a premium marketplace product detail module, with product close-ups, material texture, use-case fragments, clean spacing, ${sharedRules}. Style: ${clean(job.style, "clean editorial ecommerce")}. Platform target: ${preset.platform}, ${preset.label}. Extra request: ${clean(job.extraPrompt, "none")}.`,
+      `${modeRules(job)}Design a ${preset.ratio} ecommerce detail-page visual for ${clean(job.productName, "the product")}. Category: ${clean(job.category, "general merchandise")}. Communicate these product benefits visually without relying on readable text: ${clean(job.sellingPoints, "quality, durability, ease of use")}. Layout should feel like a premium marketplace product detail module, with realistic product close-ups, material texture, use-case fragments, clean spacing, ${sharedRules}. Style: ${clean(job.style, "clean editorial ecommerce")}. Platform target: ${preset.platform}, ${preset.label}. Extra request: ${clean(job.extraPrompt, "none")}.`,
   },
   {
     id: "festival-promo",
@@ -111,7 +120,7 @@ export const imageTemplates: ImageTemplate[] = [
     defaultSize: "1024x1024",
     description: "用于活动氛围、促销封面和移动端海报。",
     promptBuilder: (job, preset) =>
-      `Create a ${preset.ratio} festive ecommerce campaign image for ${clean(job.productName, "the product")}. Festival or campaign scene: ${clean(job.scene, "618 shopping festival")}. Category: ${clean(job.category, "consumer product")}. Style: ${clean(job.style, "bright premium retail campaign")}. Highlight product value: ${clean(job.sellingPoints, "great value and gift-worthy presentation")}. Make it promotional but not cluttered, leave space for optional marketing text, no fake price labels, ${sharedRules}. Platform target: ${preset.platform}, ${preset.label}. Extra request: ${clean(job.extraPrompt, "none")}.`,
+      `${modeRules(job)}Create a ${preset.ratio} festive ecommerce campaign image for ${clean(job.productName, "the product")}. Festival or campaign scene: ${clean(job.scene, "618 shopping festival")}. Category: ${clean(job.category, "consumer product")}. Style: ${clean(job.style, "bright premium retail campaign")}. Highlight product value: ${clean(job.sellingPoints, "great value and gift-worthy presentation")}. Make it promotional but not cluttered, keep the referenced product accurate, leave space for optional marketing text, no fake price labels, ${sharedRules}. Platform target: ${preset.platform}, ${preset.label}. Extra request: ${clean(job.extraPrompt, "none")}.`,
   },
 ];
 

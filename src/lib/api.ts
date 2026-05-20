@@ -43,12 +43,14 @@ export const generateImage = async ({
   size,
   ratio,
   quality,
+  imageUrls = [],
 }: {
   config: ApiConfig;
   prompt: string;
   size: string;
   ratio: string;
   quality: string;
+  imageUrls?: string[];
 }) => {
   const error = validateConfig(config);
   if (error) throw new Error(error);
@@ -69,6 +71,7 @@ export const generateImage = async ({
         n: 1,
         quality: quality || undefined,
         resolution: isApimartLike(config) ? "1k" : undefined,
+        image_urls: imageUrls.length > 0 ? imageUrls : undefined,
         response_format: isApimartLike(config) ? undefined : "b64_json",
       }),
     });

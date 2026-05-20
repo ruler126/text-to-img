@@ -5,6 +5,7 @@ import {
   Download,
   Eraser,
   ImageIcon,
+  ImageUp,
   KeyRound,
   Loader2,
   RefreshCcw,
@@ -16,7 +17,14 @@ import {
 } from "lucide-react";
 import { categoryLabels, imageTemplates, platformPresets, scenes, styles } from "./data/presets";
 import { generateImage, testConnection, validateConfig } from "./lib/api";
-import { blobToDataUrl, downloadBlob, fitToPreset, makeThumbnail, safeFileName } from "./lib/image";
+import {
+  blobToDataUrl,
+  downloadBlob,
+  fitToPreset,
+  makeThumbnail,
+  prepareReferenceImage,
+  safeFileName,
+} from "./lib/image";
 import {
   addHistoryItem,
   clearApiConfig,
@@ -27,9 +35,10 @@ import {
   saveApiConfig,
   saveBlob,
 } from "./lib/storage";
-import type { ApiConfig, ExportFormat, GenerateJob, HistoryItem, PlatformPreset } from "./types";
+import type { ApiConfig, ExportFormat, GenerateJob, HistoryItem, PlatformPreset, ReferenceImage } from "./types";
 
 const initialJob: GenerateJob = {
+  mode: "text",
   templateId: "main-clean",
   productName: "",
   category: "",
@@ -44,10 +53,17 @@ const initialJob: GenerateJob = {
 
 const uid = () => crypto.randomUUID();
 
+const formatBytes = (bytes: number) => {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+};
+
 export function App() {
   const [apiConfig, setApiConfig] = useState<ApiConfig>(() => loadApiConfig());
   const [job, setJob] = useState<GenerateJob>(initialJob);
   const [history, setHistory] = useState<HistoryItem[]>(() => loadHistory());
+  const [referenceImage, setReferenceImage] = useState<ReferenceImage | null>(null);
   const [resultBlob, setResultBlob] = useState<Blob | null>(null);
   const [resultUrl, setResultUrl] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
@@ -85,8 +101,10 @@ export function App() {
     setJob((current) => ({ ...current, [key]: value }));
   };
 
-  const handleGenerate = async (override?: GenerateJob) => {
+  const handleGenerate = async (override?: GenerateJob, overrideReference?: ReferenceImage | null) => {
     const nextJob = override ?? job;
+    const effectiveReference =
+      nextJob.mode === "reference" ? (overrideReference === undefined ? referenceImage : overrideReference) : null;
     const selectedTemplate =
       imageTemplates.find((item) => item.id === nextJob.templateId) ?? imageTemplates[0];
     const selectedPreset =
@@ -99,6 +117,11 @@ export function App() {
       setError("请先填写商品名称。");
       return;
     }
+    const imageUrls = effectiveReference ? [effectiveReference.dataUrl] : [];
+    if (nextJob.mode === "reference" && imageUrls.length === 0) {
+      setError("商品参考图模式需要先上传一张真实商品图。");
+      return;
+    }
 
     setIsGenerating(true);
     try {
@@ -108,11 +131,20 @@ export function App() {
         size: nextJob.size || selectedTemplate.defaultSize,
         ratio: selectedPreset.ratio,
         quality: nextJob.quality,
+        imageUrls,
       });
       const imageBlobId = uid();
       const thumbnailBlobId = uid();
       const thumbnail = await makeThumbnail(imageBlob);
-      await Promise.all([saveBlob(imageBlobId, imageBlob), saveBlob(thumbnailBlobId, thumbnail)]);
+      const referenceBlobId = nextJob.mode === "reference" && effectiveReference ? uid() : undefined;
+      const referenceThumbnailBlobId = nextJob.mode === "reference" && effectiveReference ? uid() : undefined;
+      const referenceThumbnail = effectiveReference ? await makeThumbnail(effectiveReference.blob) : undefined;
+      await Promise.all([
+        saveBlob(imageBlobId, imageBlob),
+        saveBlob(thumbnailBlobId, thumbnail),
+        referenceBlobId && effectiveReference ? saveBlob(referenceBlobId, effectiveReference.blob) : Promise.resolve(),
+        referenceThumbnailBlobId && referenceThumbnail ? saveBlob(referenceThumbnailBlobId, referenceThumbnail) : Promise.resolve(),
+      ]);
 
       const item: HistoryItem = {
         id: uid(),
@@ -124,6 +156,9 @@ export function App() {
         platformPreset: selectedPreset,
         imageBlobId,
         thumbnailBlobId,
+        referenceImageBlobId: referenceBlobId,
+        referenceThumbnailBlobId,
+        referenceImageName: effectiveReference?.fileName,
         job: nextJob,
       };
       setHistory(await addHistoryItem(item));
@@ -133,6 +168,20 @@ export function App() {
       setError(caught instanceof Error ? caught.message : "生成失败，请检查 API 配置。");
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const handleReferenceUpload = async (file: File | undefined) => {
+    if (!file) return;
+    setError("");
+    setNotice("");
+    try {
+      const nextReference = await prepareReferenceImage(file);
+      setReferenceImage(nextReference);
+      updateJob("mode", "reference");
+      setNotice("商品参考图已处理，生成时会发送给当前 API 服务商。");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "参考图处理失败。");
     }
   };
 
@@ -168,8 +217,38 @@ export function App() {
     if (blob) {
       setResultBlob(blob);
       setJob(item.job);
+      if (item.referenceImageBlobId) {
+        const referenceBlob = await getBlob(item.referenceImageBlobId);
+        if (referenceBlob) {
+          setReferenceImage({
+            blob: referenceBlob,
+            dataUrl: await blobToDataUrl(referenceBlob),
+            fileName: item.referenceImageName ?? "reference-image.jpg",
+            width: 0,
+            height: 0,
+            size: referenceBlob.size,
+          });
+        }
+      } else {
+        setReferenceImage(null);
+      }
       setNotice("已载入历史图片和参数。");
     }
+  };
+
+  const regenerateHistoryItem = async (item: HistoryItem) => {
+    const referenceBlob = item.referenceImageBlobId ? await getBlob(item.referenceImageBlobId) : undefined;
+    const nextReference = referenceBlob
+      ? {
+          blob: referenceBlob,
+          dataUrl: await blobToDataUrl(referenceBlob),
+          fileName: item.referenceImageName ?? "reference-image.jpg",
+          width: 0,
+          height: 0,
+          size: referenceBlob.size,
+        }
+      : null;
+    await handleGenerate(item.job, nextReference);
   };
 
   const exportHistoryItem = async (item: HistoryItem) => {
@@ -185,6 +264,11 @@ export function App() {
   const copyPrompt = async (value: string) => {
     await navigator.clipboard.writeText(value);
     setNotice("提示词已复制。");
+  };
+
+  const resetJob = () => {
+    setJob(initialJob);
+    setReferenceImage(null);
   };
 
   return (
@@ -264,6 +348,74 @@ export function App() {
               <Copy size={16} />
               复制提示词
             </button>
+          </div>
+
+          <div className="mb-5 grid gap-3 rounded-lg border border-line bg-mist p-3">
+            <div className="flex flex-wrap gap-2">
+              <button
+                className={`mode-button ${job.mode === "text" ? "mode-button-active" : ""}`}
+                onClick={() => updateJob("mode", "text")}
+              >
+                文生图
+              </button>
+              <button
+                className={`mode-button ${job.mode === "reference" ? "mode-button-active" : ""}`}
+                onClick={() => updateJob("mode", "reference")}
+              >
+                商品参考图
+              </button>
+            </div>
+            {job.mode === "reference" && (
+              <div className="grid gap-3 md:grid-cols-[180px_minmax(0,1fr)]">
+                <label className="upload-tile">
+                  {referenceImage ? (
+                    <img src={referenceImage.dataUrl} alt="商品参考图" className="h-full w-full object-contain" />
+                  ) : (
+                    <span className="flex flex-col items-center gap-2 text-sm text-slate-500">
+                      <ImageUp size={24} />
+                      上传商品图
+                    </span>
+                  )}
+                  <input
+                    className="hidden"
+                    type="file"
+                    accept="image/png,image/jpeg,image/jpg,image/webp"
+                    onChange={(event) => handleReferenceUpload(event.target.files?.[0])}
+                  />
+                </label>
+                <div className="flex min-w-0 flex-col justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-700">
+                      {referenceImage ? referenceImage.fileName : "未选择商品参考图"}
+                    </div>
+                    <p className="mt-1 text-sm text-slate-500">
+                      {referenceImage
+                        ? `${referenceImage.width || "?"}x${referenceImage.height || "?"} · ${formatBytes(referenceImage.size)}`
+                        : "支持 PNG、JPG、JPEG、WebP，上传后会压缩到最长边 1600px。"}
+                    </p>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">
+                      参考图保存在当前浏览器历史中；生成时会发送给你配置的 API 服务商。
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <label className="secondary-button cursor-pointer">
+                      <ImageUp size={16} />
+                      {referenceImage ? "替换图片" : "选择图片"}
+                      <input
+                        className="hidden"
+                        type="file"
+                        accept="image/png,image/jpeg,image/jpg,image/webp"
+                        onChange={(event) => handleReferenceUpload(event.target.files?.[0])}
+                      />
+                    </label>
+                    <button className="secondary-button" disabled={!referenceImage} onClick={() => setReferenceImage(null)}>
+                      <Trash2 size={16} />
+                      删除参考图
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">
@@ -370,7 +522,7 @@ export function App() {
               {isGenerating ? <Loader2 className="animate-spin" size={18} /> : <Sparkles size={18} />}
               {isGenerating ? "生成中" : "生成图片"}
             </button>
-            <button className="secondary-button" onClick={() => setJob(initialJob)}>
+            <button className="secondary-button" onClick={resetJob}>
               <Eraser size={16} />
               重置参数
             </button>
@@ -419,7 +571,7 @@ export function App() {
           <HistoryPanel
             history={history}
             onOpen={openHistoryItem}
-            onRegenerate={(item) => handleGenerate(item.job)}
+            onRegenerate={regenerateHistoryItem}
             onCopyPrompt={copyPrompt}
             onExport={exportHistoryItem}
             onClear={async () => {
@@ -554,21 +706,26 @@ function HistoryPanel({
   onClear: () => void;
 }) {
   const [thumbUrls, setThumbUrls] = useState<Record<string, string>>({});
+  const [referenceThumbUrls, setReferenceThumbUrls] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let alive = true;
-    const urls: string[] = [];
     Promise.all(
       history.map(async (item) => {
         const blob = await getBlob(item.thumbnailBlobId);
-        if (!blob) return null;
-        const url = await blobToDataUrl(blob);
-        urls.push(url);
-        return [item.id, url] as const;
+        const referenceBlob = item.referenceThumbnailBlobId ? await getBlob(item.referenceThumbnailBlobId) : undefined;
+        return {
+          id: item.id,
+          thumb: blob ? await blobToDataUrl(blob) : "",
+          referenceThumb: referenceBlob ? await blobToDataUrl(referenceBlob) : "",
+        };
       }),
     ).then((entries) => {
       if (!alive) return;
-      setThumbUrls(Object.fromEntries(entries.filter(Boolean) as Array<[string, string]>));
+      setThumbUrls(Object.fromEntries(entries.filter((entry) => entry.thumb).map((entry) => [entry.id, entry.thumb])));
+      setReferenceThumbUrls(
+        Object.fromEntries(entries.filter((entry) => entry.referenceThumb).map((entry) => [entry.id, entry.referenceThumb])),
+      );
     });
     return () => {
       alive = false;
@@ -594,9 +751,16 @@ function HistoryPanel({
         <div className="max-h-[560px] space-y-3 overflow-auto pr-1">
           {history.map((item) => (
             <article key={item.id} className="history-card">
-              <button className="h-20 w-20 shrink-0 overflow-hidden rounded-md bg-mist" onClick={() => onOpen(item)}>
+              <button className="relative h-20 w-20 shrink-0 overflow-hidden rounded-md bg-mist" onClick={() => onOpen(item)}>
                 {thumbUrls[item.id] ? (
                   <img src={thumbUrls[item.id]} alt={item.templateName} className="h-full w-full object-cover" />
+                ) : null}
+                {referenceThumbUrls[item.id] ? (
+                  <img
+                    src={referenceThumbUrls[item.id]}
+                    alt="参考图"
+                    className="absolute bottom-1 right-1 h-7 w-7 rounded border border-white object-cover shadow-sm"
+                  />
                 ) : null}
               </button>
               <div className="min-w-0 flex-1">
@@ -607,7 +771,7 @@ function HistoryPanel({
                   </span>
                 </div>
                 <p className="truncate text-xs text-slate-500">
-                  {item.platformPreset.label} · {item.model}
+                  {item.platformPreset.label} · {item.model} · {item.job.mode === "reference" ? "商品参考图" : "文生图"}
                 </p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   <button className="tiny-button" onClick={() => onOpen(item)} title="打开">
