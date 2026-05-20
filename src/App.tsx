@@ -59,6 +59,11 @@ const formatBytes = (bytes: number) => {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 };
 
+const prepareRevisionReference = async (blob: Blob): Promise<ReferenceImage> => {
+  const file = new File([blob], "current-result.png", { type: blob.type || "image/png" });
+  return prepareReferenceImage(file);
+};
+
 export function App() {
   const [apiConfig, setApiConfig] = useState<ApiConfig>(() => loadApiConfig());
   const [job, setJob] = useState<GenerateJob>(initialJob);
@@ -70,6 +75,7 @@ export function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(!loadApiConfig().baseURL);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [revisionPrompt, setRevisionPrompt] = useState("");
   const [testState, setTestState] = useState<"idle" | "testing" | "ok" | "fail">("idle");
   const referenceInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -167,6 +173,78 @@ export function App() {
       setNotice("生成完成，已保存到本地历史。");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "生成失败，请检查 API 配置。");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleReviseResult = async () => {
+    setError("");
+    setNotice("");
+    if (!resultBlob) {
+      setError("请先生成一张图片，再继续修改。");
+      return;
+    }
+    if (!revisionPrompt.trim()) {
+      setError("请先填写想要修改的内容。");
+      return;
+    }
+
+    const selectedTemplate = imageTemplates.find((item) => item.id === job.templateId) ?? imageTemplates[0];
+    const revisionText = revisionPrompt.trim();
+    const revisionImage = await prepareRevisionReference(resultBlob);
+    const generatedPrompt = [
+      "Use the provided current image as the visual reference.",
+      "Revise only the areas described by the user while keeping the rest of the image as unchanged as possible.",
+      "Preserve the product identity, shape, color, material, logo, packaging structure, composition, and commercial quality unless the user explicitly asks to change them.",
+      `User revision request: ${revisionText}.`,
+      `Original ecommerce context: ${selectedTemplate.promptBuilder(job, preset)}`,
+    ].join(" ");
+
+    setIsGenerating(true);
+    try {
+      const imageBlob = await generateImage({
+        config: apiConfig,
+        prompt: generatedPrompt,
+        size: job.size || selectedTemplate.defaultSize,
+        ratio: preset.ratio,
+        quality: job.quality,
+        imageUrls: [revisionImage.dataUrl],
+      });
+      const imageBlobId = uid();
+      const thumbnailBlobId = uid();
+      const revisionBlobId = uid();
+      const revisionThumbnailBlobId = uid();
+      const thumbnail = await makeThumbnail(imageBlob);
+      const revisionThumbnail = await makeThumbnail(revisionImage.blob);
+      await Promise.all([
+        saveBlob(imageBlobId, imageBlob),
+        saveBlob(thumbnailBlobId, thumbnail),
+        saveBlob(revisionBlobId, revisionImage.blob),
+        saveBlob(revisionThumbnailBlobId, revisionThumbnail),
+      ]);
+
+      const item: HistoryItem = {
+        id: uid(),
+        createdAt: new Date().toISOString(),
+        templateId: job.templateId,
+        templateName: `${selectedTemplate.name} 续改`,
+        prompt: generatedPrompt,
+        model: apiConfig.model,
+        platformPreset: preset,
+        imageBlobId,
+        thumbnailBlobId,
+        referenceImageBlobId: revisionBlobId,
+        referenceThumbnailBlobId: revisionThumbnailBlobId,
+        referenceImageName: "current-result.jpg",
+        job,
+      };
+      setHistory(await addHistoryItem(item));
+      setResultBlob(imageBlob);
+      setRevisionPrompt("");
+      setNotice("续改完成，已保存到本地历史。");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "续改失败，请检查 API 配置。");
     } finally {
       setIsGenerating(false);
     }
@@ -444,18 +522,32 @@ export function App() {
               />
             </Field>
             <Field label="风格">
-              <select className="input" value={job.style} onChange={(event) => updateJob("style", event.target.value)}>
+              <input
+                className="input"
+                list="style-options"
+                value={job.style}
+                onChange={(event) => updateJob("style", event.target.value)}
+                placeholder="选择或输入风格"
+              />
+              <datalist id="style-options">
                 {styles.map((item) => (
-                  <option key={item}>{item}</option>
+                  <option key={item} value={item} />
                 ))}
-              </select>
+              </datalist>
             </Field>
             <Field label="场景 / 活动">
-              <select className="input" value={job.scene} onChange={(event) => updateJob("scene", event.target.value)}>
+              <input
+                className="input"
+                list="scene-options"
+                value={job.scene}
+                onChange={(event) => updateJob("scene", event.target.value)}
+                placeholder="选择或输入场景 / 活动"
+              />
+              <datalist id="scene-options">
                 {scenes.map((item) => (
-                  <option key={item}>{item}</option>
+                  <option key={item} value={item} />
                 ))}
-              </select>
+              </datalist>
             </Field>
             <Field label="平台规格">
               <select
@@ -572,6 +664,25 @@ export function App() {
               <button className="secondary-button justify-center" disabled={!resultBlob} onClick={() => copyPrompt(prompt)}>
                 <Copy size={16} />
                 提示词
+              </button>
+            </div>
+            <div className="mt-4 border-t border-line pt-4">
+              <label className="block">
+                <span className="mb-1.5 block text-sm font-medium text-slate-700">继续修改</span>
+                <textarea
+                  className="input min-h-24 resize-y"
+                  value={revisionPrompt}
+                  onChange={(event) => setRevisionPrompt(event.target.value)}
+                  placeholder="例如：把背景换成浅色厨房，右上角留出文案区域，其他部分尽量不变"
+                />
+              </label>
+              <button
+                className="primary-button mt-3 w-full"
+                disabled={!resultBlob || isGenerating}
+                onClick={handleReviseResult}
+              >
+                {isGenerating ? <Loader2 className="animate-spin" size={18} /> : <RefreshCcw size={18} />}
+                {isGenerating ? "续改中" : "继续修改图片"}
               </button>
             </div>
           </div>
