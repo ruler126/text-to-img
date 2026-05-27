@@ -8,6 +8,7 @@ import {
   ImageUp,
   KeyRound,
   Loader2,
+  Maximize2,
   RefreshCcw,
   Settings,
   Sparkles,
@@ -74,6 +75,7 @@ export function App() {
   const [referenceImage, setReferenceImage] = useState<ReferenceImage | null>(null);
   const [resultBlob, setResultBlob] = useState<Blob | null>(null);
   const [resultUrl, setResultUrl] = useState("");
+  const [isResultPreviewOpen, setIsResultPreviewOpen] = useState(false);
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [isRevisingImage, setIsRevisingImage] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(!loadApiConfig().baseURL);
@@ -105,12 +107,24 @@ export function App() {
   useEffect(() => {
     if (!resultBlob) {
       setResultUrl("");
+      setIsResultPreviewOpen(false);
       return;
     }
     const url = URL.createObjectURL(resultBlob);
     setResultUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [resultBlob]);
+
+  useEffect(() => {
+    if (!isResultPreviewOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsResultPreviewOpen(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isResultPreviewOpen]);
 
   const updateJob = <K extends keyof GenerateJob>(key: K, value: GenerateJob[K]) => {
     setJob((current) => ({ ...current, [key]: value }));
@@ -676,7 +690,17 @@ export function App() {
             </div>
             <div className="result-stage">
               {resultUrl ? (
-                <img src={resultUrl} alt="生成结果" className="max-h-full max-w-full rounded-md object-contain" />
+                <button
+                  className="group relative grid h-full w-full place-items-center rounded-md outline-none focus-visible:ring-4 focus-visible:ring-teal-700/20"
+                  type="button"
+                  onClick={() => setIsResultPreviewOpen(true)}
+                  title="查看大图"
+                >
+                  <img src={resultUrl} alt="生成结果" className="max-h-full max-w-full rounded-md object-contain" />
+                  <span className="absolute right-2 top-2 grid h-9 w-9 place-items-center rounded-lg bg-white/90 text-slate-700 opacity-0 shadow transition group-hover:opacity-100 group-focus-visible:opacity-100">
+                    <Maximize2 size={17} />
+                  </span>
+                </button>
               ) : (
                 <div className="text-center text-sm text-slate-500">
                   <ImageIcon className="mx-auto mb-2" size={30} />
@@ -741,6 +765,30 @@ export function App() {
           />
         </section>
       </main>
+
+      {isResultPreviewOpen && resultUrl && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-slate-950/85 p-3 sm:p-6"
+          onClick={() => setIsResultPreviewOpen(false)}
+        >
+          <div className="relative flex h-full w-full max-w-[min(1200px,96vw)] items-center justify-center">
+            <button
+              className="absolute right-0 top-0 z-10 grid h-11 w-11 place-items-center rounded-lg bg-white text-slate-700 shadow-panel transition hover:text-accent"
+              type="button"
+              onClick={() => setIsResultPreviewOpen(false)}
+              title="关闭大图"
+            >
+              <X size={20} />
+            </button>
+            <img
+              src={resultUrl}
+              alt="生成结果大图"
+              className="max-h-[calc(100vh-2rem)] max-w-full rounded-lg bg-white object-contain shadow-panel sm:max-h-[calc(100vh-3rem)]"
+              onClick={(event) => event.stopPropagation()}
+            />
+          </div>
+        </div>
+      )}
 
       {isSettingsOpen && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4">
