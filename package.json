@@ -1,10 +1,12 @@
 {
   "name": "ecommerce-ai-image-studio",
-  "version": "0.2.3",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "server": "node --experimental-sqlite server/index.mjs",
+    "test:server": "node --experimental-sqlite --test server/license-db.test.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview"
   },

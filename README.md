@@ -14,6 +14,8 @@
 - IndexedDB 保存图片 Blob，localStorage 保存最多 20 条历史元数据
 - 支持打开历史、重新生成、复制提示词、原图下载、按规格导出 PNG/JPG
 - 使用 Canvas 在浏览器本地进行尺寸适配和导出
+- 支持 6 位卡密登录、剩余次数展示、成功生成/续改后扣减次数
+- 独立卡密管理后台支持批量生成 10/20/30/50/100 次卡密、启用/禁用、CSV/JSON 导出
 
 ## 启动
 
@@ -28,6 +30,16 @@ npm run dev
 http://127.0.0.1:5173
 ```
 
+本地开发时如果需要联调卡密接口，另开一个终端启动后端服务：
+
+```bash
+$env:ADMIN_PASSWORD="your-admin-password"
+$env:SESSION_SECRET="replace-with-a-random-secret"
+npm run server
+```
+
+Vite 开发服务器会把 `/api` 代理到 `http://127.0.0.1:8787`。
+
 ## 构建
 
 ```bash
@@ -36,9 +48,31 @@ npm run build
 
 构建产物会输出到 `dist/`。
 
+生产运行示例：
+
+```bash
+$env:ADMIN_PASSWORD="your-admin-password"
+$env:SESSION_SECRET="replace-with-a-random-secret"
+$env:CARD_DB_PATH="data/cards.sqlite"
+npm run build
+npm run server
+```
+
+用户页面：
+
+```text
+http://127.0.0.1:8787/
+```
+
+站长卡密管理页：
+
+```text
+http://127.0.0.1:8787/admin.html
+```
+
 ## 版本管理
 
-当前版本为 `v0.2.3`。
+当前版本为 `v0.3.1`。
 
 后续每次功能修改或修复，按下面的节奏管理版本：
 
@@ -91,3 +125,5 @@ APIMart `gpt-image-2` 会使用异步任务模式，站点会自动轮询 `/task
 - 历史元数据：`localStorage`
 - 图片和缩略图：`IndexedDB`
 - 历史最多保留 20 条，超出后自动删除最旧图片数据
+- 卡密数据：后端 SQLite，默认 `data/cards.sqlite`
+- 卡密登录：后端 HttpOnly Cookie session

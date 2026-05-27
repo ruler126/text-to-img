@@ -69,3 +69,23 @@ export interface HistoryItem {
   referenceImageName?: string;
   job: GenerateJob;
 }
+
+export interface CardSession {
+  code: string;
+  totalUses: number;
+  usedUses: number;
+  remainingUses: number;
+  status: "active" | "disabled";
+}
+
+export interface UsageReservation {
+  id: string;
+  code: string;
+  expiresAt: string;
+}
+
+export interface AdminCard extends CardSession {
+  createdAt: string;
+  lastLoginAt?: string | null;
+  note: string;
+}

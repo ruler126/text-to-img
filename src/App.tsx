@@ -17,6 +17,9 @@ import {
 } from "lucide-react";
 import { categoryLabels, imageTemplates, platformPresets, scenes, styles } from "./data/presets";
 import { generateImage, testConnection, validateConfig } from "./lib/api";
+import { CardLicensePanel } from "./card-license/CardLicensePanel";
+import { cardApi } from "./card-license/api";
+import { useCardLicense } from "./card-license/useCardLicense";
 import {
   blobToDataUrl,
   downloadBlob,
@@ -71,13 +74,15 @@ export function App() {
   const [referenceImage, setReferenceImage] = useState<ReferenceImage | null>(null);
   const [resultBlob, setResultBlob] = useState<Blob | null>(null);
   const [resultUrl, setResultUrl] = useState("");
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [isGeneratingImage, setIsGeneratingImage] = useState(false);
+  const [isRevisingImage, setIsRevisingImage] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(!loadApiConfig().baseURL);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [revisionPrompt, setRevisionPrompt] = useState("");
   const [testState, setTestState] = useState<"idle" | "testing" | "ok" | "fail">("idle");
   const referenceInputRef = useRef<HTMLInputElement | null>(null);
+  const license = useCardLicense();
 
   const template = useMemo(
     () => imageTemplates.find((item) => item.id === job.templateId) ?? imageTemplates[0],
@@ -89,6 +94,8 @@ export function App() {
   );
   const prompt = useMemo(() => template.promptBuilder(job, preset), [job, preset, template]);
   const configReady = !validateConfig(apiConfig);
+  const processingBlockedReason = license.blockedReason;
+  const isProcessing = isGeneratingImage || isRevisingImage;
 
   useEffect(() => {
     saveApiConfig(apiConfig);
@@ -120,6 +127,10 @@ export function App() {
 
     setError("");
     setNotice("");
+    if (processingBlockedReason) {
+      setError(processingBlockedReason);
+      return;
+    }
     if (!nextJob.productName.trim()) {
       setError("请先填写商品名称。");
       return;
@@ -130,8 +141,11 @@ export function App() {
       return;
     }
 
-    setIsGenerating(true);
+    setIsGeneratingImage(true);
+    let reservationId = "";
     try {
+      const reservation = await cardApi.startUsage();
+      reservationId = reservation.id;
       const imageBlob = await generateImage({
         config: apiConfig,
         prompt: generatedPrompt,
@@ -170,17 +184,26 @@ export function App() {
       };
       setHistory(await addHistoryItem(item));
       setResultBlob(imageBlob);
+      license.setCardFromUsage(await cardApi.finishUsage(reservationId, true));
       setNotice("生成完成，已保存到本地历史。");
     } catch (caught) {
+      if (reservationId) {
+        await cardApi.finishUsage(reservationId, false).catch(() => undefined);
+        await license.refresh();
+      }
       setError(caught instanceof Error ? caught.message : "生成失败，请检查 API 配置。");
     } finally {
-      setIsGenerating(false);
+      setIsGeneratingImage(false);
     }
   };
 
   const handleReviseResult = async () => {
     setError("");
     setNotice("");
+    if (processingBlockedReason) {
+      setError(processingBlockedReason);
+      return;
+    }
     if (!resultBlob) {
       setError("请先生成一张图片，再继续修改。");
       return;
@@ -201,8 +224,11 @@ export function App() {
       `Original ecommerce context: ${selectedTemplate.promptBuilder(job, preset)}`,
     ].join(" ");
 
-    setIsGenerating(true);
+    setIsRevisingImage(true);
+    let reservationId = "";
     try {
+      const reservation = await cardApi.startUsage();
+      reservationId = reservation.id;
       const imageBlob = await generateImage({
         config: apiConfig,
         prompt: generatedPrompt,
@@ -242,11 +268,16 @@ export function App() {
       setHistory(await addHistoryItem(item));
       setResultBlob(imageBlob);
       setRevisionPrompt("");
+      license.setCardFromUsage(await cardApi.finishUsage(reservationId, true));
       setNotice("续改完成，已保存到本地历史。");
     } catch (caught) {
+      if (reservationId) {
+        await cardApi.finishUsage(reservationId, false).catch(() => undefined);
+        await license.refresh();
+      }
       setError(caught instanceof Error ? caught.message : "续改失败，请检查 API 配置。");
     } finally {
-      setIsGenerating(false);
+      setIsRevisingImage(false);
     }
   };
 
@@ -388,6 +419,13 @@ export function App() {
             <button className="icon-button" onClick={() => setIsSettingsOpen(true)} title="API 设置">
               <Settings size={18} />
             </button>
+            <CardLicensePanel
+              card={license.card}
+              isLoading={license.isLoading}
+              message={license.message}
+              onLogin={license.login}
+              onLogout={license.logout}
+            />
           </div>
         </div>
       </header>
@@ -603,12 +641,13 @@ export function App() {
           </div>
 
           {error && <Alert tone="error" message={error} />}
+          {!error && processingBlockedReason && <Alert tone="error" message={processingBlockedReason} />}
           {notice && <Alert tone="ok" message={notice} />}
 
           <div className="sticky bottom-0 mt-5 flex flex-wrap gap-3 border-t border-line bg-white/95 py-4 backdrop-blur">
-            <button className="primary-button" disabled={isGenerating} onClick={() => handleGenerate()}>
-              {isGenerating ? <Loader2 className="animate-spin" size={18} /> : <Sparkles size={18} />}
-              {isGenerating ? "生成中" : "生成图片"}
+            <button className="primary-button" disabled={isProcessing || Boolean(processingBlockedReason)} onClick={() => handleGenerate()}>
+              {isGeneratingImage ? <Loader2 className="animate-spin" size={18} /> : <Sparkles size={18} />}
+              {isGeneratingImage ? "生成中" : "生成图片"}
             </button>
             <button className="secondary-button" onClick={resetJob}>
               <Eraser size={16} />
@@ -666,11 +705,11 @@ export function App() {
               </label>
               <button
                 className="primary-button mt-3 w-full"
-                disabled={!resultBlob || isGenerating}
+                disabled={!resultBlob || isProcessing || Boolean(processingBlockedReason)}
                 onClick={handleReviseResult}
               >
-                {isGenerating ? <Loader2 className="animate-spin" size={18} /> : <RefreshCcw size={18} />}
-                {isGenerating ? "续改中" : "继续修改图片"}
+                {isRevisingImage ? <Loader2 className="animate-spin" size={18} /> : <RefreshCcw size={18} />}
+                {isRevisingImage ? "续改中" : "继续修改图片"}
               </button>
             </div>
           </div>
