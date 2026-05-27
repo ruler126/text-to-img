@@ -5,6 +5,22 @@ const normalizeBaseUrl = (baseURL: string) => baseURL.replace(/\/+$/, "");
 const htmlHint =
   "接口返回了 HTML 页面，不是 JSON。请检查 baseURL 是否为 API 地址，例如 https://example.com/v1，而不是网站首页或当前网站地址。";
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+type ProgressHandler = (message: string) => void;
+
+const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs: number, action: string) => {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (cause) {
+    if (cause instanceof DOMException && cause.name === "AbortError") {
+      throw new Error(`${action}超时，请稍后重试或重新发起任务。`);
+    }
+    throw cause;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+};
 
 const isApimartLike = (config: ApiConfig) =>
   config.baseURL.includes("apimart.ai") || config.model.toLowerCase().includes("gpt-image-2");
@@ -44,6 +60,7 @@ export const generateImage = async ({
   ratio,
   quality,
   imageUrls = [],
+  onProgress,
 }: {
   config: ApiConfig;
   prompt: string;
@@ -51,6 +68,7 @@ export const generateImage = async ({
   ratio: string;
   quality: string;
   imageUrls?: string[];
+  onProgress?: ProgressHandler;
 }) => {
   const error = validateConfig(config);
   if (error) throw new Error(error);
@@ -58,7 +76,8 @@ export const generateImage = async ({
   const endpoint = `${normalizeBaseUrl(config.baseURL)}/images/generations`;
   let response: Response;
   try {
-    response = await fetch(endpoint, {
+    onProgress?.("正在提交图片任务...");
+    response = await fetchWithTimeout(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -74,8 +93,11 @@ export const generateImage = async ({
         image_urls: imageUrls.length > 0 ? imageUrls : undefined,
         response_format: isApimartLike(config) ? undefined : "b64_json",
       }),
-    });
+    }, 45000, "提交生成任务");
   } catch (cause) {
+    if (cause instanceof Error && cause.message.includes("超时")) {
+      throw cause;
+    }
     throw new Error(
       "连接失败。请检查 baseURL，或确认该中转站允许浏览器跨域请求（CORS）。",
       { cause },
@@ -83,7 +105,7 @@ export const generateImage = async ({
   }
 
   const payload = await readJsonResponse(response, "生成");
-  return extractImageBlobOrPoll(config, payload);
+  return extractImageBlobOrPoll(config, payload, onProgress);
 };
 
 const extractImageUrl = (payload: any): string => {
@@ -94,21 +116,23 @@ const extractImageUrl = (payload: any): string => {
   return "";
 };
 
-const extractImageBlobOrPoll = async (config: ApiConfig, payload: any): Promise<Blob> => {
+const extractImageBlobOrPoll = async (config: ApiConfig, payload: any, onProgress?: ProgressHandler): Promise<Blob> => {
   const image = payload?.data?.[0] ?? payload?.data ?? payload;
 
   if (image?.b64_json) {
+    onProgress?.("正在处理返回图片...");
     return base64ToBlob(image.b64_json, "image/png");
   }
 
   const immediateUrl = extractImageUrl(payload);
   if (immediateUrl) {
+    onProgress?.("正在下载生成结果...");
     return fetchImageBlob(immediateUrl);
   }
 
   const taskId = image?.task_id ?? image?.id ?? payload?.task_id;
   if (taskId && image?.status !== "completed") {
-    return pollTaskResult(config, taskId);
+    return pollTaskResult(config, taskId, onProgress);
   }
 
   throw new Error("接口返回中没有找到 b64_json、url 或 task_id 图片数据。");
@@ -116,25 +140,29 @@ const extractImageBlobOrPoll = async (config: ApiConfig, payload: any): Promise<
 
 const fetchImageBlob = async (url: string) => {
   try {
-    const imageResponse = await fetch(url);
+    const imageResponse = await fetchWithTimeout(url, {}, 45000, "下载生成图片");
     if (!imageResponse.ok) throw new Error(`HTTP ${imageResponse.status}`);
     return await imageResponse.blob();
   } catch (cause) {
+    if (cause instanceof Error && cause.message.includes("超时")) {
+      throw cause;
+    }
     throw new Error("接口返回了图片 URL，但浏览器无法跨域转存。请确认图片链接允许浏览器访问。", {
       cause,
     });
   }
 };
 
-const pollTaskResult = async (config: ApiConfig, taskId: string) => {
+const pollTaskResult = async (config: ApiConfig, taskId: string, onProgress?: ProgressHandler) => {
   const endpoint = `${normalizeBaseUrl(config.baseURL)}/tasks/${taskId}`;
-  const maxAttempts = 36;
+  const maxAttempts = 42;
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     await sleep(attempt === 0 ? 10000 : 4000);
-    const response = await fetch(endpoint, {
+    onProgress?.(`图片任务处理中，正在第 ${attempt + 1}/${maxAttempts} 次查询...`);
+    const response = await fetchWithTimeout(endpoint, {
       headers: { Authorization: `Bearer ${config.apiKey}` },
-    });
+    }, 20000, "查询图片任务");
     const payload = await readJsonResponse(response, "查询任务");
     const data = payload?.data ?? payload;
     const status = data?.status;
@@ -146,20 +174,21 @@ const pollTaskResult = async (config: ApiConfig, taskId: string) => {
     if (status === "completed") {
       const imageUrl = extractImageUrl(payload);
       if (!imageUrl) throw new Error("任务已完成，但响应中没有找到图片 URL。");
+      onProgress?.("任务完成，正在下载生成结果...");
       return fetchImageBlob(imageUrl);
     }
   }
 
-  throw new Error("图片生成任务仍在处理中，请稍后重试。");
+  throw new Error("图片生成任务等待超时。可能是服务商任务排队或卡住，请稍后重新点击生成/续改。");
 };
 
 export const testConnection = async (config: ApiConfig) => {
   const error = validateConfig(config);
   if (error) throw new Error(error);
   const endpoint = `${normalizeBaseUrl(config.baseURL)}/models`;
-  const response = await fetch(endpoint, {
+  const response = await fetchWithTimeout(endpoint, {
     headers: { Authorization: `Bearer ${config.apiKey}` },
-  });
+  }, 20000, "连接测试");
   await readJsonResponse(response, "连接测试");
   return true;
 };

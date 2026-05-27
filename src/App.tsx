@@ -79,6 +79,7 @@ export function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(!loadApiConfig().baseURL);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [operationStatus, setOperationStatus] = useState("");
   const [revisionPrompt, setRevisionPrompt] = useState("");
   const [testState, setTestState] = useState<"idle" | "testing" | "ok" | "fail">("idle");
   const referenceInputRef = useRef<HTMLInputElement | null>(null);
@@ -142,6 +143,7 @@ export function App() {
     }
 
     setIsGeneratingImage(true);
+    setOperationStatus("正在准备生成任务...");
     let reservationId = "";
     try {
       const reservation = await cardApi.startUsage();
@@ -153,6 +155,7 @@ export function App() {
         ratio: selectedPreset.ratio,
         quality: nextJob.quality,
         imageUrls,
+        onProgress: setOperationStatus,
       });
       const imageBlobId = uid();
       const thumbnailBlobId = uid();
@@ -185,6 +188,7 @@ export function App() {
       setHistory(await addHistoryItem(item));
       setResultBlob(imageBlob);
       license.setCardFromUsage(await cardApi.finishUsage(reservationId, true));
+      setOperationStatus("");
       setNotice("生成完成，已保存到本地历史。");
     } catch (caught) {
       if (reservationId) {
@@ -193,6 +197,7 @@ export function App() {
       }
       setError(caught instanceof Error ? caught.message : "生成失败，请检查 API 配置。");
     } finally {
+      setOperationStatus("");
       setIsGeneratingImage(false);
     }
   };
@@ -213,20 +218,20 @@ export function App() {
       return;
     }
 
-    const selectedTemplate = imageTemplates.find((item) => item.id === job.templateId) ?? imageTemplates[0];
-    const revisionText = revisionPrompt.trim();
-    const revisionImage = await prepareRevisionReference(resultBlob);
-    const generatedPrompt = [
-      "Use the provided current image as the visual reference.",
-      "Revise only the areas described by the user while keeping the rest of the image as unchanged as possible.",
-      "Preserve the product identity, shape, color, material, logo, packaging structure, composition, and commercial quality unless the user explicitly asks to change them.",
-      `User revision request: ${revisionText}.`,
-      `Original ecommerce context: ${selectedTemplate.promptBuilder(job, preset)}`,
-    ].join(" ");
-
     setIsRevisingImage(true);
+    setOperationStatus("正在准备续改参考图...");
     let reservationId = "";
     try {
+      const selectedTemplate = imageTemplates.find((item) => item.id === job.templateId) ?? imageTemplates[0];
+      const revisionText = revisionPrompt.trim();
+      const revisionImage = await prepareRevisionReference(resultBlob);
+      const generatedPrompt = [
+        "Use the provided current image as the visual reference.",
+        "Revise only the areas described by the user while keeping the rest of the image as unchanged as possible.",
+        "Preserve the product identity, shape, color, material, logo, packaging structure, composition, and commercial quality unless the user explicitly asks to change them.",
+        `User revision request: ${revisionText}.`,
+        `Original ecommerce context: ${selectedTemplate.promptBuilder(job, preset)}`,
+      ].join(" ");
       const reservation = await cardApi.startUsage();
       reservationId = reservation.id;
       const imageBlob = await generateImage({
@@ -236,6 +241,7 @@ export function App() {
         ratio: preset.ratio,
         quality: job.quality,
         imageUrls: [revisionImage.dataUrl],
+        onProgress: setOperationStatus,
       });
       const imageBlobId = uid();
       const thumbnailBlobId = uid();
@@ -269,6 +275,7 @@ export function App() {
       setResultBlob(imageBlob);
       setRevisionPrompt("");
       license.setCardFromUsage(await cardApi.finishUsage(reservationId, true));
+      setOperationStatus("");
       setNotice("续改完成，已保存到本地历史。");
     } catch (caught) {
       if (reservationId) {
@@ -277,6 +284,7 @@ export function App() {
       }
       setError(caught instanceof Error ? caught.message : "续改失败，请检查 API 配置。");
     } finally {
+      setOperationStatus("");
       setIsRevisingImage(false);
     }
   };
@@ -642,6 +650,7 @@ export function App() {
 
           {error && <Alert tone="error" message={error} />}
           {!error && processingBlockedReason && <Alert tone="error" message={processingBlockedReason} />}
+          {!error && operationStatus && <Alert tone="ok" message={operationStatus} />}
           {notice && <Alert tone="ok" message={notice} />}
 
           <div className="sticky bottom-0 mt-5 flex flex-wrap gap-3 border-t border-line bg-white/95 py-4 backdrop-blur">
@@ -711,6 +720,9 @@ export function App() {
                 {isRevisingImage ? <Loader2 className="animate-spin" size={18} /> : <RefreshCcw size={18} />}
                 {isRevisingImage ? "续改中" : "继续修改图片"}
               </button>
+              {!error && operationStatus && isRevisingImage && (
+                <p className="mt-2 text-sm text-slate-500">{operationStatus}</p>
+              )}
             </div>
           </div>
 
