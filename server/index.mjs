@@ -2,7 +2,8 @@ import { createServer } from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname, join, normalize, resolve } from "node:path";
 import { createApiHandler, getImageProxyBodyLimitBytes, getServerApiConfig } from "./api-handler.mjs";
-import { makeMysqlLicenseStore } from "./license-mysql.mjs";
+import { makeFileBlobStore } from "./file-blob-store.mjs";
+import { makeBlobLicenseStore } from "./license-blob.mjs";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const PUBLIC_DIR = resolve(process.env.PUBLIC_DIR ?? "dist");
@@ -72,8 +73,8 @@ const serveStatic = (req, res, url) => {
   createReadStream(file).pipe(res);
 };
 
-const store = await makeMysqlLicenseStore({
-  databaseUrl: process.env.DATABASE_URL,
+const store = makeBlobLicenseStore({
+  blobStore: makeFileBlobStore({ root: process.env.LOCAL_BLOB_STORE_PATH ?? "data/blob-license" }),
   sessionSecret: process.env.SESSION_SECRET ?? "change-this-secret",
 });
 

@@ -1,13 +1,13 @@
+import { getStore } from "@edgeone/pages-blob";
 import { createApiHandler, getImageProxyBodyLimitBytes, getServerApiConfig } from "../../server/api-handler.mjs";
-import { makeMysqlLicenseStore } from "../../server/license-mysql.mjs";
+import { makeBlobLicenseStore } from "../../server/license-blob.mjs";
 
 let handlerPromise;
 
 const createHandler = async (env = process.env) => {
-  const store = await makeMysqlLicenseStore({
-    databaseUrl: env.DATABASE_URL,
+  const store = makeBlobLicenseStore({
+    blobStore: getStore({ name: env.BLOB_STORE_NAME ?? "license-store", consistency: "strong" }),
     sessionSecret: env.SESSION_SECRET ?? "change-this-secret",
-    connectionLimit: Number(env.MYSQL_CONNECTION_LIMIT ?? 4) || 4,
   });
 
   return createApiHandler({

@@ -1,19 +1,19 @@
 {
   "name": "ecommerce-ai-image-studio",
-  "version": "0.4.0-edgeone.1",
+  "version": "0.4.0-edgeone.2",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "server": "node --env-file-if-exists=.env server/index.mjs",
-    "test:server": "node --test server/license-mysql.test.mjs",
+    "test:server": "node --test server/license-blob.test.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@edgeone/pages-blob": "^0.0.11",
     "@vitejs/plugin-react": "^5.1.1",
     "lucide-react": "^0.561.0",
-    "mysql2": "^3.22.4",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "typescript": "^5.9.3",

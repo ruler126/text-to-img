@@ -1,25 +1,30 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { makeMysqlLicenseStore } from "./license-mysql.mjs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { makeFileBlobStore } from "./file-blob-store.mjs";
+import { makeBlobLicenseStore } from "./license-blob.mjs";
 import { HttpError } from "./errors.mjs";
 
-const databaseUrl = process.env.MYSQL_TEST_DATABASE_URL;
-
 const makeStore = async () => {
-  const store = await makeMysqlLicenseStore({
-    databaseUrl,
+  const root = await mkdtemp(join(tmpdir(), "license-blob-"));
+  const blobStore = makeFileBlobStore({ root });
+  const store = makeBlobLicenseStore({
+    blobStore,
     sessionSecret: "test-secret",
     allowTestReset: true,
   });
-  await store.dangerouslyClearForTests();
-  return store;
+  return {
+    store,
+    root,
+    cleanup: async () => rm(root, { recursive: true, force: true }),
+  };
 };
 
-if (!databaseUrl) {
-  test("MySQL license store tests require MYSQL_TEST_DATABASE_URL", { skip: true }, () => {});
-} else {
-  test("batch generation creates unique mixed six-character cards", async () => {
-    const store = await makeStore();
+test("batch generation creates unique mixed six-character cards", async () => {
+  const { store, cleanup } = await makeStore();
+  try {
     const cards = await store.createCards({ totalUses: 20, count: 50, note: "batch" });
     assert.equal(cards.length, 50);
     assert.equal(new Set(cards.map((card) => card.code)).size, 50);
@@ -30,11 +35,14 @@ if (!databaseUrl) {
       assert.equal(card.totalUses, 20);
       assert.equal(card.note, "batch");
     }
-    await store.close();
-  });
+  } finally {
+    await cleanup();
+  }
+});
 
-  test("login, usage success, fail, and idempotent success", async () => {
-    const store = await makeStore();
+test("login, usage success, fail, and idempotent success", async () => {
+  const { store, cleanup } = await makeStore();
+  try {
     const [card] = await store.createCards({ totalUses: 10, count: 1 });
     const login = await store.loginCard(card.code);
     assert.equal(login.card.remainingUses, 10);
@@ -50,11 +58,14 @@ if (!databaseUrl) {
     current = await store.completeUsage(login.token, second.id, false);
     assert.equal(current.usedUses, 1);
     assert.equal(current.remainingUses, 9);
-    await store.close();
-  });
+  } finally {
+    await cleanup();
+  }
+});
 
-  test("disabled and exhausted cards cannot be used", async () => {
-    const store = await makeStore();
+test("disabled and exhausted cards cannot be used", async () => {
+  const { store, cleanup } = await makeStore();
+  try {
     const [card] = await store.createCards({ totalUses: 10, count: 1 });
     await store.updateCard(card.code, { status: "disabled" });
     await assert.rejects(() => store.loginCard(card.code), HttpError);
@@ -66,11 +77,14 @@ if (!databaseUrl) {
       await store.completeUsage(login.token, reservation.id, true);
     }
     await assert.rejects(() => store.startUsage(login.token), HttpError);
-    await store.close();
-  });
+  } finally {
+    await cleanup();
+  }
+});
 
-  test("last available use can only be reserved once", async () => {
-    const store = await makeStore();
+test("last available use can only be reserved once", async () => {
+  const { store, cleanup } = await makeStore();
+  try {
     const [card] = await store.createCards({ totalUses: 10, count: 1 });
     const login = await store.loginCard(card.code);
     for (let index = 0; index < 9; index += 1) {
@@ -79,11 +93,14 @@ if (!databaseUrl) {
     }
     await store.startUsage(login.token);
     await assert.rejects(() => store.startUsage(login.token), HttpError);
-    await store.close();
-  });
+  } finally {
+    await cleanup();
+  }
+});
 
-  test("parallel reservations do not exceed remaining uses", async () => {
-    const store = await makeStore();
+test("parallel reservations do not exceed remaining uses", async () => {
+  const { store, cleanup } = await makeStore();
+  try {
     const [card] = await store.createCards({ totalUses: 10, count: 1 });
     const login = await store.loginCard(card.code);
     for (let index = 0; index < 9; index += 1) {
@@ -98,6 +115,7 @@ if (!databaseUrl) {
     ]);
     assert.equal(attempts.filter((item) => item.status === "fulfilled").length, 1);
     assert.equal(attempts.filter((item) => item.status === "rejected").length, 2);
-    await store.close();
-  });
-}
+  } finally {
+    await cleanup();
+  }
+});

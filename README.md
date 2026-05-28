@@ -34,7 +34,7 @@ copy .env.example .env
 ```text
 ADMIN_PASSWORD=your-admin-password
 SESSION_SECRET=replace-with-a-long-random-secret
-DATABASE_URL=mysql://user:password@mysql.example.com:3306/database
+BLOB_STORE_NAME=license-store
 API_BASE_URL=https://api.example.com/v1
 API_KEY=your-api-key
 API_MODEL=gpt-image-1
@@ -95,7 +95,7 @@ http://127.0.0.1:8787/admin.html
 
 ## EdgeOne Pages 部署
 
-当前分支是 EdgeOne Pages 全栈部署分支。普通服务器 + SQLite 部署继续使用 `main` 分支。
+当前分支是 EdgeOne Pages 全栈部署分支。普通服务器部署继续使用 `main` 分支。
 
 EdgeOne Pages 项目建议通过 Git 仓库部署，构建配置由 `edgeone.json` 提供：
 
@@ -110,18 +110,32 @@ EdgeOne Pages 项目建议通过 Git 仓库部署，构建配置由 `edgeone.jso
 ```text
 ADMIN_PASSWORD=your-admin-password
 SESSION_SECRET=replace-with-a-long-random-secret
-DATABASE_URL=mysql://user:password@host:3306/database
+BLOB_STORE_NAME=license-store
 API_BASE_URL=https://api.example.com/v1
 API_KEY=your-api-key
 API_MODEL=gpt-image-1
 IMAGE_PROXY_BODY_LIMIT_MB=6
 ```
 
-第一版 EdgeOne 不接对象存储。生成图片只保存在用户当前浏览器 IndexedDB，历史元数据保存在当前浏览器 localStorage；MySQL 只保存卡密、登录 session 和扣次记录。
+第一版 EdgeOne 不接 MySQL 和 COS。生成图片只保存在用户当前浏览器 IndexedDB，历史元数据保存在当前浏览器 localStorage；EdgeOne Pages Blob 只保存卡密、登录 session 和扣次记录。
+
+部署步骤：
+
+1. 推送分支和 tag：
+   ```bash
+   git switch codex/edgeone-pages
+   git push -u origin codex/edgeone-pages
+   git push origin v0.4.0-edgeone.2
+   ```
+2. 在 EdgeOne Pages 新建项目，选择“导入 Git 仓库”，分支选择 `codex/edgeone-pages`。
+3. 构建配置使用 `edgeone.json`；如需手动填写，则安装命令为 `npm install`，构建命令为 `npm run build`，输出目录为 `dist`，Node.js 版本为 `20.18.0`。
+4. 在环境变量中配置上方变量，不要再配置 `DATABASE_URL`、`MYSQL_CONNECTION_LIMIT`、`MYSQL_TEST_DATABASE_URL`、`CARD_DB_PATH`。
+5. 部署完成后访问 `/admin.html`，用 `ADMIN_PASSWORD` 登录并生成卡密，再回到用户页用卡密生成图片。
+6. 到 EdgeOne 控制台 Blob Storage 查看 `license-store` 命名空间，确认有 `cards/`、`sessions/`、`usage/` 对象。
 
 ## 版本管理
 
-当前 EdgeOne 分支版本为 `v0.4.0-edgeone.1`。
+当前 EdgeOne 分支版本为 `v0.4.0-edgeone.2`。
 
 后续每次功能修改或修复，按下面的节奏管理版本：
 
@@ -183,5 +197,5 @@ EdgeOne Cloud Functions 请求体上限为 6MB，后端图片代理默认按 `IM
 - 历史元数据：`localStorage`
 - 图片和缩略图：`IndexedDB`
 - 历史最多保留 20 条，超出后自动删除最旧图片数据
-- 卡密数据：MySQL，连接串来自 `DATABASE_URL`
+- 卡密数据：EdgeOne Pages Blob，本地开发默认写入 `data/blob-license`
 - 卡密登录：后端 HttpOnly Cookie session

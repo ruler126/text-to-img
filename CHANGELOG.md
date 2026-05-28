@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.0-edgeone.2 - 2026-05-29
+
+- 将 EdgeOne 分支的卡密、登录 session 和扣次记录从 MySQL 改为 EdgeOne Pages Blob
+- 移除 `DATABASE_URL`、`mysql2` 和 MySQL 测试依赖，部署时不再需要单独购买数据库
+- 本地服务新增文件型 Blob 适配器，默认把卡密数据写入 `data/blob-license`
+- 扣次改为 usage slot 模型，成功生成后确认 slot，失败时释放 slot
+
 ## v0.4.0-edgeone.1 - 2026-05-29
 
 - 新增 EdgeOne Pages Cloud Functions 入口，支持 `/api/*` 在 EdgeOne 全栈部署中运行
