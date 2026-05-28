@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.0-edgeone.1 - 2026-05-29
+
+- 新增 EdgeOne Pages Cloud Functions 入口，支持 `/api/*` 在 EdgeOne 全栈部署中运行
+- 将 EdgeOne 分支卡密、登录 session 和扣次记录从 SQLite 改为 MySQL
+- 新增 `edgeone.json`、`DATABASE_URL` 环境变量说明和 6MB 图片代理请求体校验
+- 第一版 EdgeOne 不接对象存储，生成图片仍保存在用户当前浏览器本地历史中
+
 ## v0.3.6 - 2026-05-28
 
 - 移除商品参考图区域的 API 服务商提示语

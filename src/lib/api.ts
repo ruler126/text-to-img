@@ -6,6 +6,7 @@ const htmlHint =
   "接口返回了 HTML 页面，不是 JSON。请检查 baseURL 是否为 API 地址，例如 https://example.com/v1，而不是网站首页或当前网站地址。";
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 type ProgressHandler = (message: string) => void;
+const EDGEONE_IMAGE_PROXY_BODY_LIMIT_BYTES = 6 * 1024 * 1024;
 
 const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs: number, action: string) => {
   const controller = new AbortController();
@@ -140,11 +141,16 @@ export const generateImageWithServerDefault = async ({
   onProgress?: ProgressHandler;
 }): Promise<{ blob: Blob; card: CardSession }> => {
   onProgress?.("正在通过服务器提交图片任务...");
+  const requestBody = JSON.stringify({ prompt, size, ratio, quality, imageUrls });
+  const requestBytes = new TextEncoder().encode(requestBody).byteLength;
+  if (requestBytes > EDGEONE_IMAGE_PROXY_BODY_LIMIT_BYTES) {
+    throw new Error("参考图数据超过 EdgeOne 6MB 请求体上限，请压缩或更换参考图。");
+  }
   const response = await fetchWithTimeout("/api/images/generations", {
     method: "POST",
     credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, size, ratio, quality, imageUrls }),
+    body: requestBody,
   }, 240000, "生成");
   const payload = await readJsonResponse(response, "生成") as {
     image?: { b64Json?: string; mimeType?: string };

@@ -34,7 +34,7 @@ copy .env.example .env
 ```text
 ADMIN_PASSWORD=your-admin-password
 SESSION_SECRET=replace-with-a-long-random-secret
-CARD_DB_PATH=data/cards.sqlite
+DATABASE_URL=mysql://user:password@mysql.example.com:3306/database
 API_BASE_URL=https://api.example.com/v1
 API_KEY=your-api-key
 API_MODEL=gpt-image-1
@@ -93,9 +93,35 @@ http://127.0.0.1:8787/
 http://127.0.0.1:8787/admin.html
 ```
 
+## EdgeOne Pages 部署
+
+当前分支是 EdgeOne Pages 全栈部署分支。普通服务器 + SQLite 部署继续使用 `main` 分支。
+
+EdgeOne Pages 项目建议通过 Git 仓库部署，构建配置由 `edgeone.json` 提供：
+
+- 安装命令：`npm install`
+- 构建命令：`npm run build`
+- 输出目录：`dist`
+- Cloud Functions 地域：`ap-guangzhou`
+- Cloud Functions Node.js 最大执行时间：`120s`
+
+在 EdgeOne Pages 控制台配置环境变量：
+
+```text
+ADMIN_PASSWORD=your-admin-password
+SESSION_SECRET=replace-with-a-long-random-secret
+DATABASE_URL=mysql://user:password@host:3306/database
+API_BASE_URL=https://api.example.com/v1
+API_KEY=your-api-key
+API_MODEL=gpt-image-1
+IMAGE_PROXY_BODY_LIMIT_MB=6
+```
+
+第一版 EdgeOne 不接对象存储。生成图片只保存在用户当前浏览器 IndexedDB，历史元数据保存在当前浏览器 localStorage；MySQL 只保存卡密、登录 session 和扣次记录。
+
 ## 版本管理
 
-当前版本为 `v0.3.2`。
+当前 EdgeOne 分支版本为 `v0.4.0-edgeone.1`。
 
 后续每次功能修改或修复，按下面的节奏管理版本：
 
@@ -149,7 +175,7 @@ API 参数优先级：
 
 兼容环境变量别名：`OPENAI_BASE_URL` / `IMAGE_API_BASE_URL`、`OPENAI_API_KEY` / `IMAGE_API_KEY`、`OPENAI_MODEL` / `IMAGE_API_MODEL`。
 
-后端图片代理请求体默认最大 25MB，可用 `IMAGE_PROXY_BODY_LIMIT_MB` 调整。
+EdgeOne Cloud Functions 请求体上限为 6MB，后端图片代理默认按 `IMAGE_PROXY_BODY_LIMIT_MB=6` 处理。前端会在生成前校验请求体大小，超出时要求压缩或更换参考图。
 
 ## 本地数据
 
@@ -157,5 +183,5 @@ API 参数优先级：
 - 历史元数据：`localStorage`
 - 图片和缩略图：`IndexedDB`
 - 历史最多保留 20 条，超出后自动删除最旧图片数据
-- 卡密数据：后端 SQLite，默认 `data/cards.sqlite`
+- 卡密数据：MySQL，连接串来自 `DATABASE_URL`
 - 卡密登录：后端 HttpOnly Cookie session
