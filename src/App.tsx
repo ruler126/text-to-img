@@ -1,12 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  CheckCircle2,
   Copy,
   Download,
   Eraser,
   ImageIcon,
   ImageUp,
-  KeyRound,
   Loader2,
   Maximize2,
   RefreshCcw,
@@ -17,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { categoryLabels, imageTemplates, platformPresets, scenes, styles } from "./data/presets";
-import { generateImage, generateImageWithServerDefault, testConnection, testServerConnection, validateConfig } from "./lib/api";
+import { generateImage, generateImageWithServerDefault, validateConfig } from "./lib/api";
 import { CardLicensePanel } from "./card-license/CardLicensePanel";
 import { cardApi } from "./card-license/api";
 import { useCardLicense } from "./card-license/useCardLicense";
@@ -31,13 +29,9 @@ import {
 } from "./lib/image";
 import {
   addHistoryItem,
-  clearApiConfig,
   clearHistory,
   getBlob,
-  hasSavedApiConfig,
-  loadApiConfig,
   loadHistory,
-  saveApiConfig,
   saveBlob,
 } from "./lib/storage";
 import type { ApiConfig, CardSession, ExportFormat, GenerateJob, HistoryItem, PlatformPreset, ReferenceImage } from "./types";
@@ -65,6 +59,13 @@ const emptyServerApiConfig: ApiConfig = {
   usesServerDefault: true,
 };
 
+const emptyApiConfig: ApiConfig = {
+  baseURL: "",
+  apiKey: "",
+  model: "",
+  rememberConfig: false,
+};
+
 const normalizeServerApiConfig = (config?: Partial<ApiConfig> | null): ApiConfig => ({
   ...emptyServerApiConfig,
   baseURL: config?.baseURL ?? "",
@@ -86,9 +87,9 @@ const prepareRevisionReference = async (blob: Blob): Promise<ReferenceImage> => 
 };
 
 export function App() {
-  const [apiConfig, setApiConfig] = useState<ApiConfig>(() => loadApiConfig());
+  const [apiConfig] = useState<ApiConfig>(emptyApiConfig);
   const [serverApiConfig, setServerApiConfig] = useState<ApiConfig | null>(null);
-  const [hasLocalApiConfig, setHasLocalApiConfig] = useState(() => hasSavedApiConfig());
+  const hasLocalApiConfig = false;
   const [job, setJob] = useState<GenerateJob>(initialJob);
   const [history, setHistory] = useState<HistoryItem[]>(() => loadHistory());
   const [referenceImage, setReferenceImage] = useState<ReferenceImage | null>(null);
@@ -97,12 +98,10 @@ export function App() {
   const [isResultPreviewOpen, setIsResultPreviewOpen] = useState(false);
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [isRevisingImage, setIsRevisingImage] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [operationStatus, setOperationStatus] = useState("");
   const [revisionPrompt, setRevisionPrompt] = useState("");
-  const [testState, setTestState] = useState<"idle" | "testing" | "ok" | "fail">("idle");
   const referenceInputRef = useRef<HTMLInputElement | null>(null);
   const license = useCardLicense();
 
@@ -115,17 +114,11 @@ export function App() {
     [job.platformPresetId],
   );
   const prompt = useMemo(() => template.promptBuilder(job, preset), [job, preset, template]);
-  const configReady = !validateConfig(apiConfig);
-  const isServerDefaultConfig = !hasLocalApiConfig;
+  const configReady = hasLocalApiConfig ? !validateConfig(apiConfig) : Boolean(serverApiConfig && !validateConfig(serverApiConfig));
   const apiConfigSource = hasLocalApiConfig ? "前端配置" : serverApiConfig ? "服务器默认" : "未配置";
+  const activeModel = hasLocalApiConfig ? apiConfig.model : serverApiConfig?.model ?? "";
   const processingBlockedReason = license.blockedReason;
   const isProcessing = isGeneratingImage || isRevisingImage;
-
-  useEffect(() => {
-    if (hasLocalApiConfig) {
-      saveApiConfig(apiConfig);
-    }
-  }, [apiConfig, hasLocalApiConfig]);
 
   useEffect(() => {
     if (hasLocalApiConfig) return;
@@ -136,7 +129,6 @@ export function App() {
         if (!alive || !payload.config) return;
         const nextConfig = normalizeServerApiConfig(payload.config);
         setServerApiConfig(nextConfig);
-        setApiConfig(nextConfig);
       })
       .catch(() => undefined);
     return () => {
@@ -168,23 +160,6 @@ export function App() {
 
   const updateJob = <K extends keyof GenerateJob>(key: K, value: GenerateJob[K]) => {
     setJob((current) => ({ ...current, [key]: value }));
-  };
-
-  const updateApiConfig = <K extends keyof ApiConfig>(key: K, value: ApiConfig[K]) => {
-    setHasLocalApiConfig(true);
-    setApiConfig((current) => ({
-      ...current,
-      [key]: value,
-      rememberConfig: true,
-      hasApiKey: undefined,
-      usesServerDefault: false,
-    }));
-  };
-
-  const resetApiConfigToServerDefault = () => {
-    clearApiConfig();
-    setHasLocalApiConfig(false);
-    setApiConfig(serverApiConfig ?? emptyServerApiConfig);
   };
 
   const handleGenerate = async (override?: GenerateJob, overrideReference?: ReferenceImage | null) => {
@@ -258,7 +233,7 @@ export function App() {
         templateId: selectedTemplate.id,
         templateName: selectedTemplate.name,
         prompt: generatedPrompt,
-        model: apiConfig.model,
+        model: activeModel,
         platformPreset: selectedPreset,
         imageBlobId,
         thumbnailBlobId,
@@ -362,7 +337,7 @@ export function App() {
         templateId: job.templateId,
         templateName: `${selectedTemplate.name} 续改`,
         prompt: generatedPrompt,
-        model: apiConfig.model,
+        model: activeModel,
         platformPreset: preset,
         imageBlobId,
         thumbnailBlobId,
@@ -420,28 +395,6 @@ export function App() {
     const file = event.target.files?.[0];
     event.target.value = "";
     await handleReferenceUpload(file);
-  };
-
-  const handleTestConnection = async () => {
-    setTestState("testing");
-    setError("");
-    try {
-      if (hasLocalApiConfig) {
-        await testConnection(apiConfig);
-      } else {
-        await testServerConnection();
-      }
-      const testedConfig = { ...apiConfig, lastTestedAt: new Date().toISOString() };
-      setApiConfig(testedConfig);
-      if (!hasLocalApiConfig) {
-        setServerApiConfig(testedConfig);
-      }
-      setTestState("ok");
-      setNotice("连接测试成功。");
-    } catch (caught) {
-      setTestState("fail");
-      setError(caught instanceof Error ? caught.message : "连接测试失败。");
-    }
   };
 
   const handleExport = async (blob: Blob | null, selectedPreset: PlatformPreset, format: ExportFormat) => {
@@ -538,7 +491,13 @@ export function App() {
             >
               {configReady ? `API 已配置 · ${apiConfigSource}` : "待配置 API"}
             </span>
-            <button className="icon-button" onClick={() => setIsSettingsOpen(true)} title="API 设置">
+            <button
+              className="icon-button cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 hover:border-slate-200 hover:bg-slate-100 hover:text-slate-400"
+              type="button"
+              disabled
+              title="API 设置暂不可用"
+              aria-label="API 设置暂不可用"
+            >
               <Settings size={18} />
             </button>
             <CardLicensePanel
@@ -644,9 +603,6 @@ export function App() {
                       {referenceImage
                         ? `${referenceImage.width || "?"}x${referenceImage.height || "?"} · ${formatBytes(referenceImage.size)}`
                         : "支持 PNG、JPG、JPEG、WebP，上传后会压缩到最长边 1600px。"}
-                    </p>
-                    <p className="mt-2 text-xs leading-5 text-slate-500">
-                      参考图保存在当前浏览器历史中；生成时会发送给你配置的 API 服务商。
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -890,83 +846,6 @@ export function App() {
         </div>
       )}
 
-      {isSettingsOpen && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 p-4">
-          <div className="w-full max-w-xl rounded-xl bg-white p-5 shadow-panel">
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <h2 className="text-xl font-semibold">API 设置</h2>
-                <p className="text-sm text-slate-500">
-                  默认使用服务器环境配置；这里填写后会优先使用当前浏览器配置。
-                </p>
-              </div>
-              <button className="icon-button" onClick={() => setIsSettingsOpen(false)} title="关闭">
-                <X size={18} />
-              </button>
-            </div>
-            <div className="space-y-4">
-              <Field label="baseURL" required>
-                <input
-                  className="input"
-                  value={apiConfig.baseURL}
-                  onChange={(event) => updateApiConfig("baseURL", event.target.value)}
-                  placeholder="https://api.example.com/v1"
-                />
-              </Field>
-              <Field label="API Key" required>
-                <input
-                  className="input"
-                  type="password"
-                  value={isServerDefaultConfig ? "" : apiConfig.apiKey}
-                  onChange={(event) => updateApiConfig("apiKey", event.target.value)}
-                  placeholder={isServerDefaultConfig ? (apiConfig.hasApiKey ? "已由服务器配置，前端不会显示" : "服务器未配置 API Key") : "sk-..."}
-                />
-              </Field>
-              <Field label="模型名称" required>
-                <input
-                  className="input"
-                  value={apiConfig.model}
-                  onChange={(event) => updateApiConfig("model", event.target.value)}
-                  placeholder="gpt-image-1"
-                />
-              </Field>
-              <label className="flex items-center gap-2 text-sm text-slate-600">
-                <input
-                  type="checkbox"
-                  checked={apiConfig.rememberConfig}
-                  onChange={(event) => {
-                    setHasLocalApiConfig(true);
-                    setApiConfig({
-                      ...apiConfig,
-                      rememberConfig: event.target.checked,
-                      hasApiKey: undefined,
-                      usesServerDefault: false,
-                    });
-                  }}
-                />
-                在本地浏览器记住配置
-              </label>
-              <div className="flex flex-wrap gap-2">
-                <button className="primary-button" onClick={() => setIsSettingsOpen(false)}>
-                  <KeyRound size={17} />
-                  保存
-                </button>
-                <button className="secondary-button" onClick={handleTestConnection}>
-                  {testState === "testing" ? <Loader2 className="animate-spin" size={16} /> : <CheckCircle2 size={16} />}
-                  测试连接
-                </button>
-                <button
-                  className="danger-button"
-                  onClick={resetApiConfigToServerDefault}
-                >
-                  <Trash2 size={16} />
-                  恢复服务器默认
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
