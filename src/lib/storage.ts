@@ -97,11 +97,27 @@ export const clearHistory = async () => {
 };
 
 export const saveApiConfig = (config: ApiConfig) => {
-  if (!config.rememberConfig) {
+  if (!config.rememberConfig || config.usesServerDefault) {
     localStorage.removeItem(CONFIG_KEY);
     return;
   }
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+  localStorage.setItem(CONFIG_KEY, JSON.stringify({
+    baseURL: config.baseURL,
+    apiKey: config.apiKey,
+    model: config.model,
+    rememberConfig: config.rememberConfig,
+    lastTestedAt: config.lastTestedAt,
+  }));
+};
+
+export const hasSavedApiConfig = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CONFIG_KEY) ?? "null") as Partial<ApiConfig> | null;
+    if (saved?.usesServerDefault) return false;
+    return Boolean(saved?.baseURL || saved?.apiKey || saved?.model);
+  } catch {
+    return false;
+  }
 };
 
 export const loadApiConfig = (): ApiConfig => {
@@ -112,7 +128,15 @@ export const loadApiConfig = (): ApiConfig => {
     rememberConfig: true,
   };
   try {
-    return { ...fallback, ...JSON.parse(localStorage.getItem(CONFIG_KEY) ?? "{}") };
+    const saved = JSON.parse(localStorage.getItem(CONFIG_KEY) ?? "{}") as Partial<ApiConfig>;
+    return {
+      ...fallback,
+      baseURL: saved.baseURL ?? fallback.baseURL,
+      apiKey: saved.apiKey ?? fallback.apiKey,
+      model: saved.model ?? fallback.model,
+      rememberConfig: saved.rememberConfig ?? fallback.rememberConfig,
+      lastTestedAt: saved.lastTestedAt,
+    };
   } catch {
     return fallback;
   }

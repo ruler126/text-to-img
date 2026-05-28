@@ -9,6 +9,8 @@ export interface ApiConfig {
   apiKey: string;
   model: string;
   rememberConfig: boolean;
+  hasApiKey?: boolean;
+  usesServerDefault?: boolean;
   lastTestedAt?: string;
 }
 

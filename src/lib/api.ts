@@ -1,4 +1,4 @@
-import type { ApiConfig } from "../types";
+import type { ApiConfig, CardSession } from "../types";
 import { base64ToBlob } from "./image";
 
 const normalizeBaseUrl = (baseURL: string) => baseURL.replace(/\/+$/, "");
@@ -34,7 +34,13 @@ const readJsonResponse = async (response: Response, action: string) => {
   }
 
   if (!response.ok) {
-    throw new Error(`${action}失败：HTTP ${response.status}${text ? ` - ${text.slice(0, 180)}` : ""}`);
+    let message = text;
+    try {
+      message = JSON.parse(text)?.error ?? text;
+    } catch {
+      // Keep the raw response text when the API does not return a JSON error body.
+    }
+    throw new Error(`${action}失败：HTTP ${response.status}${message ? ` - ${message.slice(0, 180)}` : ""}`);
   }
 
   try {
@@ -46,7 +52,17 @@ const readJsonResponse = async (response: Response, action: string) => {
   }
 };
 
+const hasConfiguredApiKey = (config: ApiConfig) =>
+  config.usesServerDefault ? Boolean(config.hasApiKey) : Boolean(config.apiKey.trim());
+
 export const validateConfig = (config: ApiConfig) => {
+  if (!config.baseURL.trim()) return "请填写 baseURL。";
+  if (!hasConfiguredApiKey(config)) return "请填写 API Key。";
+  if (!config.model.trim()) return "请填写模型名称。";
+  return "";
+};
+
+const validateDirectConfig = (config: ApiConfig) => {
   if (!config.baseURL.trim()) return "请填写 baseURL。";
   if (!config.apiKey.trim()) return "请填写 API Key。";
   if (!config.model.trim()) return "请填写模型名称。";
@@ -70,7 +86,7 @@ export const generateImage = async ({
   imageUrls?: string[];
   onProgress?: ProgressHandler;
 }) => {
-  const error = validateConfig(config);
+  const error = validateDirectConfig(config);
   if (error) throw new Error(error);
 
   const endpoint = `${normalizeBaseUrl(config.baseURL)}/images/generations`;
@@ -106,6 +122,42 @@ export const generateImage = async ({
 
   const payload = await readJsonResponse(response, "生成");
   return extractImageBlobOrPoll(config, payload, onProgress);
+};
+
+export const generateImageWithServerDefault = async ({
+  prompt,
+  size,
+  ratio,
+  quality,
+  imageUrls = [],
+  onProgress,
+}: {
+  prompt: string;
+  size: string;
+  ratio: string;
+  quality: string;
+  imageUrls?: string[];
+  onProgress?: ProgressHandler;
+}): Promise<{ blob: Blob; card: CardSession }> => {
+  onProgress?.("正在通过服务器提交图片任务...");
+  const response = await fetchWithTimeout("/api/images/generations", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, size, ratio, quality, imageUrls }),
+  }, 240000, "生成");
+  const payload = await readJsonResponse(response, "生成") as {
+    image?: { b64Json?: string; mimeType?: string };
+    card?: CardSession;
+  };
+  if (!payload.image?.b64Json || !payload.card) {
+    throw new Error("服务器代理响应中没有找到图片或点卡数据。");
+  }
+  onProgress?.("正在处理返回图片...");
+  return {
+    blob: base64ToBlob(payload.image.b64Json, payload.image.mimeType ?? "image/png"),
+    card: payload.card,
+  };
 };
 
 const extractImageUrl = (payload: any): string => {
@@ -183,11 +235,21 @@ const pollTaskResult = async (config: ApiConfig, taskId: string, onProgress?: Pr
 };
 
 export const testConnection = async (config: ApiConfig) => {
-  const error = validateConfig(config);
+  const error = validateDirectConfig(config);
   if (error) throw new Error(error);
   const endpoint = `${normalizeBaseUrl(config.baseURL)}/models`;
   const response = await fetchWithTimeout(endpoint, {
     headers: { Authorization: `Bearer ${config.apiKey}` },
+  }, 20000, "连接测试");
+  await readJsonResponse(response, "连接测试");
+  return true;
+};
+
+export const testServerConnection = async () => {
+  const response = await fetchWithTimeout("/api/config/test", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
   }, 20000, "连接测试");
   await readJsonResponse(response, "连接测试");
   return true;

@@ -17,7 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { categoryLabels, imageTemplates, platformPresets, scenes, styles } from "./data/presets";
-import { generateImage, testConnection, validateConfig } from "./lib/api";
+import { generateImage, generateImageWithServerDefault, testConnection, testServerConnection, validateConfig } from "./lib/api";
 import { CardLicensePanel } from "./card-license/CardLicensePanel";
 import { cardApi } from "./card-license/api";
 import { useCardLicense } from "./card-license/useCardLicense";
@@ -34,12 +34,13 @@ import {
   clearApiConfig,
   clearHistory,
   getBlob,
+  hasSavedApiConfig,
   loadApiConfig,
   loadHistory,
   saveApiConfig,
   saveBlob,
 } from "./lib/storage";
-import type { ApiConfig, ExportFormat, GenerateJob, HistoryItem, PlatformPreset, ReferenceImage } from "./types";
+import type { ApiConfig, CardSession, ExportFormat, GenerateJob, HistoryItem, PlatformPreset, ReferenceImage } from "./types";
 
 const initialJob: GenerateJob = {
   mode: "text",
@@ -54,6 +55,22 @@ const initialJob: GenerateJob = {
   quality: "standard",
   extraPrompt: "",
 };
+
+const emptyServerApiConfig: ApiConfig = {
+  baseURL: "",
+  apiKey: "",
+  model: "",
+  rememberConfig: false,
+  hasApiKey: false,
+  usesServerDefault: true,
+};
+
+const normalizeServerApiConfig = (config?: Partial<ApiConfig> | null): ApiConfig => ({
+  ...emptyServerApiConfig,
+  baseURL: config?.baseURL ?? "",
+  model: config?.model ?? "",
+  hasApiKey: Boolean(config?.hasApiKey),
+});
 
 const uid = () => crypto.randomUUID();
 
@@ -70,6 +87,8 @@ const prepareRevisionReference = async (blob: Blob): Promise<ReferenceImage> => 
 
 export function App() {
   const [apiConfig, setApiConfig] = useState<ApiConfig>(() => loadApiConfig());
+  const [serverApiConfig, setServerApiConfig] = useState<ApiConfig | null>(null);
+  const [hasLocalApiConfig, setHasLocalApiConfig] = useState(() => hasSavedApiConfig());
   const [job, setJob] = useState<GenerateJob>(initialJob);
   const [history, setHistory] = useState<HistoryItem[]>(() => loadHistory());
   const [referenceImage, setReferenceImage] = useState<ReferenceImage | null>(null);
@@ -78,7 +97,7 @@ export function App() {
   const [isResultPreviewOpen, setIsResultPreviewOpen] = useState(false);
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [isRevisingImage, setIsRevisingImage] = useState(false);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(!loadApiConfig().baseURL);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [operationStatus, setOperationStatus] = useState("");
@@ -97,12 +116,33 @@ export function App() {
   );
   const prompt = useMemo(() => template.promptBuilder(job, preset), [job, preset, template]);
   const configReady = !validateConfig(apiConfig);
+  const isServerDefaultConfig = !hasLocalApiConfig;
+  const apiConfigSource = hasLocalApiConfig ? "前端配置" : serverApiConfig ? "服务器默认" : "未配置";
   const processingBlockedReason = license.blockedReason;
   const isProcessing = isGeneratingImage || isRevisingImage;
 
   useEffect(() => {
-    saveApiConfig(apiConfig);
-  }, [apiConfig]);
+    if (hasLocalApiConfig) {
+      saveApiConfig(apiConfig);
+    }
+  }, [apiConfig, hasLocalApiConfig]);
+
+  useEffect(() => {
+    if (hasLocalApiConfig) return;
+    let alive = true;
+    fetch("/api/config/default")
+      .then((response) => (response.ok ? response.json() : Promise.reject()))
+      .then((payload: { config?: ApiConfig }) => {
+        if (!alive || !payload.config) return;
+        const nextConfig = normalizeServerApiConfig(payload.config);
+        setServerApiConfig(nextConfig);
+        setApiConfig(nextConfig);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [hasLocalApiConfig]);
 
   useEffect(() => {
     if (!resultBlob) {
@@ -128,6 +168,23 @@ export function App() {
 
   const updateJob = <K extends keyof GenerateJob>(key: K, value: GenerateJob[K]) => {
     setJob((current) => ({ ...current, [key]: value }));
+  };
+
+  const updateApiConfig = <K extends keyof ApiConfig>(key: K, value: ApiConfig[K]) => {
+    setHasLocalApiConfig(true);
+    setApiConfig((current) => ({
+      ...current,
+      [key]: value,
+      rememberConfig: true,
+      hasApiKey: undefined,
+      usesServerDefault: false,
+    }));
+  };
+
+  const resetApiConfigToServerDefault = () => {
+    clearApiConfig();
+    setHasLocalApiConfig(false);
+    setApiConfig(serverApiConfig ?? emptyServerApiConfig);
   };
 
   const handleGenerate = async (override?: GenerateJob, overrideReference?: ReferenceImage | null) => {
@@ -159,18 +216,29 @@ export function App() {
     setIsGeneratingImage(true);
     setOperationStatus("正在准备生成任务...");
     let reservationId = "";
+    let completedCard: CardSession | null = null;
     try {
-      const reservation = await cardApi.startUsage();
-      reservationId = reservation.id;
-      const imageBlob = await generateImage({
-        config: apiConfig,
+      let imageBlob: Blob;
+      const generationOptions = {
         prompt: generatedPrompt,
         size: nextJob.size || selectedTemplate.defaultSize,
         ratio: selectedPreset.ratio,
         quality: nextJob.quality,
         imageUrls,
         onProgress: setOperationStatus,
-      });
+      };
+      if (hasLocalApiConfig) {
+        const reservation = await cardApi.startUsage();
+        reservationId = reservation.id;
+        imageBlob = await generateImage({
+          config: apiConfig,
+          ...generationOptions,
+        });
+      } else {
+        const result = await generateImageWithServerDefault(generationOptions);
+        imageBlob = result.blob;
+        completedCard = result.card;
+      }
       const imageBlobId = uid();
       const thumbnailBlobId = uid();
       const thumbnail = await makeThumbnail(imageBlob);
@@ -201,12 +269,19 @@ export function App() {
       };
       setHistory(await addHistoryItem(item));
       setResultBlob(imageBlob);
-      license.setCardFromUsage(await cardApi.finishUsage(reservationId, true));
+      if (hasLocalApiConfig) {
+        completedCard = await cardApi.finishUsage(reservationId, true);
+      }
+      if (completedCard) {
+        license.setCardFromUsage(completedCard);
+      }
       setOperationStatus("");
       setNotice("生成完成，已保存到本地历史。");
     } catch (caught) {
-      if (reservationId) {
+      if (hasLocalApiConfig && reservationId) {
         await cardApi.finishUsage(reservationId, false).catch(() => undefined);
+        await license.refresh();
+      } else {
         await license.refresh();
       }
       setError(caught instanceof Error ? caught.message : "生成失败，请检查 API 配置。");
@@ -235,6 +310,7 @@ export function App() {
     setIsRevisingImage(true);
     setOperationStatus("正在准备续改参考图...");
     let reservationId = "";
+    let completedCard: CardSession | null = null;
     try {
       const selectedTemplate = imageTemplates.find((item) => item.id === job.templateId) ?? imageTemplates[0];
       const revisionText = revisionPrompt.trim();
@@ -246,17 +322,27 @@ export function App() {
         `User revision request: ${revisionText}.`,
         `Original ecommerce context: ${selectedTemplate.promptBuilder(job, preset)}`,
       ].join(" ");
-      const reservation = await cardApi.startUsage();
-      reservationId = reservation.id;
-      const imageBlob = await generateImage({
-        config: apiConfig,
+      let imageBlob: Blob;
+      const generationOptions = {
         prompt: generatedPrompt,
         size: job.size || selectedTemplate.defaultSize,
         ratio: preset.ratio,
         quality: job.quality,
         imageUrls: [revisionImage.dataUrl],
         onProgress: setOperationStatus,
-      });
+      };
+      if (hasLocalApiConfig) {
+        const reservation = await cardApi.startUsage();
+        reservationId = reservation.id;
+        imageBlob = await generateImage({
+          config: apiConfig,
+          ...generationOptions,
+        });
+      } else {
+        const result = await generateImageWithServerDefault(generationOptions);
+        imageBlob = result.blob;
+        completedCard = result.card;
+      }
       const imageBlobId = uid();
       const thumbnailBlobId = uid();
       const revisionBlobId = uid();
@@ -288,12 +374,19 @@ export function App() {
       setHistory(await addHistoryItem(item));
       setResultBlob(imageBlob);
       setRevisionPrompt("");
-      license.setCardFromUsage(await cardApi.finishUsage(reservationId, true));
+      if (hasLocalApiConfig) {
+        completedCard = await cardApi.finishUsage(reservationId, true);
+      }
+      if (completedCard) {
+        license.setCardFromUsage(completedCard);
+      }
       setOperationStatus("");
       setNotice("续改完成，已保存到本地历史。");
     } catch (caught) {
-      if (reservationId) {
+      if (hasLocalApiConfig && reservationId) {
         await cardApi.finishUsage(reservationId, false).catch(() => undefined);
+        await license.refresh();
+      } else {
         await license.refresh();
       }
       setError(caught instanceof Error ? caught.message : "续改失败，请检查 API 配置。");
@@ -333,9 +426,16 @@ export function App() {
     setTestState("testing");
     setError("");
     try {
-      await testConnection(apiConfig);
+      if (hasLocalApiConfig) {
+        await testConnection(apiConfig);
+      } else {
+        await testServerConnection();
+      }
       const testedConfig = { ...apiConfig, lastTestedAt: new Date().toISOString() };
       setApiConfig(testedConfig);
+      if (!hasLocalApiConfig) {
+        setServerApiConfig(testedConfig);
+      }
       setTestState("ok");
       setNotice("连接测试成功。");
     } catch (caught) {
@@ -436,7 +536,7 @@ export function App() {
                 configReady ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
               }`}
             >
-              {configReady ? "API 已配置" : "待配置 API"}
+              {configReady ? `API 已配置 · ${apiConfigSource}` : "待配置 API"}
             </span>
             <button className="icon-button" onClick={() => setIsSettingsOpen(true)} title="API 设置">
               <Settings size={18} />
@@ -796,7 +896,9 @@ export function App() {
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-semibold">API 设置</h2>
-                <p className="text-sm text-slate-500">配置只保存在当前浏览器。</p>
+                <p className="text-sm text-slate-500">
+                  默认使用服务器环境配置；这里填写后会优先使用当前浏览器配置。
+                </p>
               </div>
               <button className="icon-button" onClick={() => setIsSettingsOpen(false)} title="关闭">
                 <X size={18} />
@@ -807,7 +909,7 @@ export function App() {
                 <input
                   className="input"
                   value={apiConfig.baseURL}
-                  onChange={(event) => setApiConfig({ ...apiConfig, baseURL: event.target.value })}
+                  onChange={(event) => updateApiConfig("baseURL", event.target.value)}
                   placeholder="https://api.example.com/v1"
                 />
               </Field>
@@ -815,16 +917,16 @@ export function App() {
                 <input
                   className="input"
                   type="password"
-                  value={apiConfig.apiKey}
-                  onChange={(event) => setApiConfig({ ...apiConfig, apiKey: event.target.value })}
-                  placeholder="sk-..."
+                  value={isServerDefaultConfig ? "" : apiConfig.apiKey}
+                  onChange={(event) => updateApiConfig("apiKey", event.target.value)}
+                  placeholder={isServerDefaultConfig ? (apiConfig.hasApiKey ? "已由服务器配置，前端不会显示" : "服务器未配置 API Key") : "sk-..."}
                 />
               </Field>
               <Field label="模型名称" required>
                 <input
                   className="input"
                   value={apiConfig.model}
-                  onChange={(event) => setApiConfig({ ...apiConfig, model: event.target.value })}
+                  onChange={(event) => updateApiConfig("model", event.target.value)}
                   placeholder="gpt-image-1"
                 />
               </Field>
@@ -832,7 +934,15 @@ export function App() {
                 <input
                   type="checkbox"
                   checked={apiConfig.rememberConfig}
-                  onChange={(event) => setApiConfig({ ...apiConfig, rememberConfig: event.target.checked })}
+                  onChange={(event) => {
+                    setHasLocalApiConfig(true);
+                    setApiConfig({
+                      ...apiConfig,
+                      rememberConfig: event.target.checked,
+                      hasApiKey: undefined,
+                      usesServerDefault: false,
+                    });
+                  }}
                 />
                 在本地浏览器记住配置
               </label>
@@ -847,13 +957,10 @@ export function App() {
                 </button>
                 <button
                   className="danger-button"
-                  onClick={() => {
-                    clearApiConfig();
-                    setApiConfig({ baseURL: "", apiKey: "", model: "", rememberConfig: true });
-                  }}
+                  onClick={resetApiConfigToServerDefault}
                 >
                   <Trash2 size={16} />
-                  清除配置
+                  恢复服务器默认
                 </button>
               </div>
             </div>
