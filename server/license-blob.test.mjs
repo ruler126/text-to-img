@@ -160,6 +160,7 @@ test("server image proxy returns a pending reservation without confirming usage"
 
     const payload = await response.json();
     assert.equal(payload.image.b64Json, "AQID");
+    assert.equal(payload.job.status, "completed");
     assert.ok(payload.reservation.id);
     assert.equal(payload.card, undefined);
 
@@ -168,6 +169,83 @@ test("server image proxy returns a pending reservation without confirming usage"
     assert.equal(current.remainingUses, 10);
 
     current = await store.completeUsage(login.token, payload.reservation.id, true);
+    assert.equal(current.usedUses, 1);
+    assert.equal(current.remainingUses, 9);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await cleanup();
+  }
+});
+
+test("server image proxy can complete an async upstream task without confirming usage", async () => {
+  const { store, cleanup } = await makeStore();
+  const originalFetch = globalThis.fetch;
+  try {
+    const [card] = await store.createCards({ totalUses: 10, count: 1 });
+    const login = await store.loginCard(card.code);
+    let fetchCount = 0;
+    globalThis.fetch = async (url) => {
+      fetchCount += 1;
+      if (String(url).endsWith("/images/generations")) {
+        return new Response(JSON.stringify({ data: { id: "upstream-task-1", status: "queued" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      assert.match(String(url), /\/tasks\/upstream-task-1$/);
+      return new Response(JSON.stringify({ data: { status: "completed", b64_json: "BAUG" } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    const handler = createApiHandler({
+      store,
+      serverApiConfig: {
+        baseURL: "https://api.example.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+      },
+    });
+    const headers = {
+      "Content-Type": "application/json",
+      Cookie: `card_session=${encodeURIComponent(login.token)}`,
+    };
+    const submitResponse = await handler(new Request("http://localhost/api/images/generations", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        prompt: "make a product image",
+        size: "1024x1024",
+        ratio: "1:1",
+        quality: "standard",
+      }),
+    }));
+    assert.equal(submitResponse.status, 200);
+
+    const submitPayload = await submitResponse.json();
+    assert.equal(submitPayload.job.status, "pending");
+    assert.equal(submitPayload.image, undefined);
+    assert.ok(submitPayload.reservation.id);
+
+    let current = await store.getCard(card.code);
+    assert.equal(current.usedUses, 0);
+    assert.equal(current.remainingUses, 10);
+
+    const jobResponse = await handler(new Request(`http://localhost/api/images/jobs/${submitPayload.job.id}`, {
+      headers,
+    }));
+    assert.equal(jobResponse.status, 200);
+    const jobPayload = await jobResponse.json();
+    assert.equal(jobPayload.job.status, "completed");
+    assert.equal(jobPayload.image.b64Json, "BAUG");
+    assert.equal(fetchCount, 2);
+
+    current = await store.getCard(card.code);
+    assert.equal(current.usedUses, 0);
+    assert.equal(current.remainingUses, 10);
+
+    current = await store.completeUsage(login.token, submitPayload.reservation.id, true);
     assert.equal(current.usedUses, 1);
     assert.equal(current.remainingUses, 9);
   } finally {

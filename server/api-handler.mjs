@@ -61,8 +61,6 @@ const csvEscape = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
 
 const normalizeBaseUrl = (baseURL) => String(baseURL ?? "").replace(/\/+$/, "");
 
-const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
-
 const isApimartLike = (serverApiConfig) =>
   serverApiConfig.baseURL.includes("apimart.ai") || serverApiConfig.model.toLowerCase().includes("gpt-image-2");
 
@@ -87,9 +85,9 @@ const fetchWithTimeout = async (url, options, timeoutMs, action) => {
     return await fetch(url, { ...options, signal: controller.signal });
   } catch (cause) {
     if (cause?.name === "AbortError") {
-      throw new HttpError(504, `${action}超时，请稍后重试。`);
+      throw new HttpError(504, `${action}时间太久，暂时没有完成。请稍后再试。`);
     }
-    throw new HttpError(502, `${action}连接失败，请检查网络、上游 API 地址或部署函数运行状态。`);
+    throw new HttpError(502, `${action}暂时失败。请稍后再试。`);
   } finally {
     clearTimeout(timeout);
   }
@@ -120,61 +118,34 @@ const extractImageUrl = (payload) => {
 };
 
 const fetchImageAsBase64 = async (url) => {
-  const upstreamResponse = await fetchWithTimeout(url, {}, 45000, "下载生成图片");
+  const upstreamResponse = await fetchWithTimeout(url, {}, 20000, "下载生成图片");
   if (!upstreamResponse.ok) throw new HttpError(502, `下载生成图片失败：HTTP ${upstreamResponse.status}`);
   const mimeType = (upstreamResponse.headers.get("content-type") ?? "image/png").split(";")[0] || "image/png";
   const buffer = Buffer.from(await upstreamResponse.arrayBuffer());
   return { b64Json: buffer.toString("base64"), mimeType };
 };
 
-const pollTaskResult = async (taskId, serverApiConfig) => {
-  const endpoint = `${normalizeBaseUrl(serverApiConfig.baseURL)}/tasks/${encodeURIComponent(taskId)}`;
-  const maxAttempts = 42;
-
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    await sleep(attempt === 0 ? 10000 : 4000);
-    const upstreamResponse = await fetchWithTimeout(endpoint, {
-      headers: { Authorization: `Bearer ${serverApiConfig.apiKey}` },
-    }, 20000, "查询图片任务");
-    const payload = await readJsonResponse(upstreamResponse, "查询任务");
-    const data = payload?.data ?? payload;
-    const status = data?.status;
-
-    if (status === "failed") {
-      throw new HttpError(502, data?.error?.message ?? data?.fail_reason ?? "图片生成任务失败。");
-    }
-
-    if (status === "completed") {
-      const imageUrl = extractImageUrl(payload);
-      if (!imageUrl) throw new HttpError(502, "任务已完成，但响应中没有找到图片 URL。");
-      return fetchImageAsBase64(imageUrl);
-    }
-  }
-
-  throw new HttpError(504, "图片生成任务等待超时。");
-};
-
-const extractImageOrPoll = async (payload, serverApiConfig) => {
+const extractImageState = (payload) => {
   const image = payload?.data?.[0] ?? payload?.data ?? payload;
 
   if (image?.b64_json) {
-    return { b64Json: image.b64_json, mimeType: "image/png" };
+    return { status: "completed", image: { b64Json: image.b64_json, mimeType: "image/png" } };
   }
 
   const imageUrl = extractImageUrl(payload);
   if (imageUrl) {
-    return fetchImageAsBase64(imageUrl);
+    return { status: "pending", imageUrl };
   }
 
   const taskId = image?.task_id ?? image?.id ?? payload?.task_id;
   if (taskId && image?.status !== "completed") {
-    return pollTaskResult(String(taskId), serverApiConfig);
+    return { status: "pending", upstreamTaskId: String(taskId) };
   }
 
   throw new HttpError(502, "接口返回中没有找到 b64_json、url 或 task_id 图片数据。");
 };
 
-const generateImageWithServerDefault = async (body, serverApiConfig) => {
+const submitImageGeneration = async (body, serverApiConfig) => {
   validateServerApiConfig(serverApiConfig);
   const prompt = String(body.prompt ?? "").trim();
   if (!prompt) throw new HttpError(400, "请填写图片提示词。");
@@ -200,9 +171,72 @@ const generateImageWithServerDefault = async (body, serverApiConfig) => {
       image_urls: imageUrls.length > 0 ? imageUrls : undefined,
       response_format: apimartLike ? undefined : "b64_json",
     }),
-  }, 45000, "提交生成任务");
+  }, 25000, "提交生成任务");
   const payload = await readJsonResponse(upstreamResponse, "生成");
-  return extractImageOrPoll(payload, serverApiConfig);
+  return extractImageState(payload);
+};
+
+const publicImageJob = (job) => ({
+  id: job.id,
+  status: job.status,
+  expiresAt: job.expiresAt,
+});
+
+const resolveImageJob = async ({ store, serverApiConfig, cookies, id }) => {
+  let job = await store.getImageJob(cookies.card_session, id);
+  if (job.status === "completed") return { job: publicImageJob(job), image: job.image };
+  if (job.status === "failed") throw new HttpError(502, job.error || "图片生成失败，请稍后再试。");
+
+  if (job.imageUrl) {
+    const image = await fetchImageAsBase64(job.imageUrl);
+    job = await store.updateImageJob(cookies.card_session, id, {
+      status: "completed",
+      image,
+      imageUrl: null,
+    });
+    return { job: publicImageJob(job), image };
+  }
+
+  if (!job.upstreamTaskId) return { job: publicImageJob(job) };
+
+  const endpoint = `${normalizeBaseUrl(serverApiConfig.baseURL)}/tasks/${encodeURIComponent(job.upstreamTaskId)}`;
+  const upstreamResponse = await fetchWithTimeout(endpoint, {
+    headers: { Authorization: `Bearer ${serverApiConfig.apiKey}` },
+  }, 15000, "查询图片任务");
+  const payload = await readJsonResponse(upstreamResponse, "查询任务");
+  const data = payload?.data ?? payload;
+  const status = data?.status;
+
+  if (status === "failed") {
+    const error = data?.error?.message ?? data?.fail_reason ?? "图片生成失败，请稍后再试。";
+    await store.updateImageJob(cookies.card_session, id, { status: "failed", error });
+    throw new HttpError(502, error);
+  }
+
+  if (status !== "completed") {
+    job = await store.updateImageJob(cookies.card_session, id, { status: "pending" });
+    return { job: publicImageJob(job) };
+  }
+
+  const state = extractImageState(payload);
+  if (state.imageUrl) {
+    const image = await fetchImageAsBase64(state.imageUrl);
+    job = await store.updateImageJob(cookies.card_session, id, {
+      status: "completed",
+      image,
+      upstreamTaskId: null,
+      imageUrl: null,
+    });
+    return { job: publicImageJob(job), image };
+  }
+
+  job = await store.updateImageJob(cookies.card_session, id, {
+    status: "completed",
+    image: state.image,
+    upstreamTaskId: null,
+    imageUrl: null,
+  });
+  return { job: publicImageJob(job), image: state.image };
 };
 
 const testServerDefaultConnection = async (serverApiConfig) => {
@@ -217,8 +251,20 @@ const testServerDefaultConnection = async (serverApiConfig) => {
 const generateImageForCard = async ({ store, serverApiConfig, body, cookies }) => {
   const reservation = await store.startUsage(cookies.card_session);
   try {
-    const image = await generateImageWithServerDefault(body, serverApiConfig);
-    return { image, reservation };
+    const state = await submitImageGeneration(body, serverApiConfig);
+    const job = await store.createImageJob(cookies.card_session, {
+      code: reservation.code,
+      reservationId: reservation.id,
+      status: state.status,
+      upstreamTaskId: state.upstreamTaskId,
+      imageUrl: state.imageUrl,
+      image: state.image,
+    });
+    return {
+      job: publicImageJob(job),
+      image: state.status === "completed" ? state.image : undefined,
+      reservation,
+    };
   } catch (error) {
     try {
       await store.completeUsage(cookies.card_session, reservation.id, false);
@@ -256,6 +302,11 @@ export const createApiHandler = ({
 
     if (isImageProxyRequest) {
       return response(200, await generateImageForCard({ store, serverApiConfig, body, cookies }));
+    }
+
+    const imageJobMatch = url.pathname.match(/^\/api\/images\/jobs\/([^/]+)$/);
+    if (request.method === "GET" && imageJobMatch) {
+      return response(200, await resolveImageJob({ store, serverApiConfig, cookies, id: imageJobMatch[1] }));
     }
 
     if (request.method === "POST" && url.pathname === "/api/cards/login") {

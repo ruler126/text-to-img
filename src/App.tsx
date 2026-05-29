@@ -182,7 +182,7 @@ export function App() {
   const formatGenerationError = (caught: unknown, fallback: string) => {
     if (!(caught instanceof Error)) return fallback;
     if (/Failed to fetch|NetworkError|Load failed/i.test(caught.message)) {
-      return "连接生成服务失败。请检查本地服务是否已启动、网络是否中断，或线上函数是否超时；如果使用浏览器直连第三方 API，请确认 CORS 配置。";
+      return "图片生成时间太久，暂时没有完成。请稍后再试，未扣减兑换码次数。";
     }
     return caught.message || fallback;
   };

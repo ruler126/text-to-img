@@ -14,6 +14,7 @@ const randomId = () => randomBytes(18).toString("base64url");
 
 const cardKey = (code) => `cards/${code}.json`;
 const sessionKey = (hash) => `sessions/${hash}.json`;
+const imageJobKey = (id) => `image-jobs/${id}.json`;
 const usagePrefix = (code) => `usage/${code}/`;
 const slotKey = (code, slot) => `${usagePrefix(code)}${String(slot).padStart(4, "0")}.json`;
 
@@ -254,6 +255,52 @@ export const makeBlobLicenseStore = ({ blobStore, sessionSecret = "change-this-s
     return getCard(card.code);
   };
 
+  const createImageJob = async (token, job) => {
+    const card = await requireCardSession(token);
+    if (job.code !== card.code) throw new HttpError(403, "无权访问该图片任务。");
+    const id = randomId();
+    const record = {
+      id,
+      code: card.code,
+      reservationId: job.reservationId,
+      status: job.status ?? "pending",
+      upstreamTaskId: job.upstreamTaskId ?? null,
+      imageUrl: job.imageUrl ?? null,
+      image: job.image ?? null,
+      error: job.error ?? "",
+      createdAt: now(),
+      updatedAt: now(),
+      expiresAt: future(RESERVATION_TTL_MS),
+    };
+    await blobStore.setJSON(imageJobKey(id), record, { onlyIfNew: true });
+    return record;
+  };
+
+  const getImageJob = async (token, id) => {
+    const card = await requireCardSession(token);
+    const record = await safeGetJson(blobStore, imageJobKey(id));
+    if (!record || record.code !== card.code) throw new HttpError(404, "图片任务不存在。");
+    if (Date.parse(record.expiresAt) <= Date.now()) {
+      await blobStore.delete(imageJobKey(id));
+      throw new HttpError(404, "图片任务已过期，请重新生成。");
+    }
+    return record;
+  };
+
+  const updateImageJob = async (token, id, patch) => {
+    const current = await getImageJob(token, id);
+    const next = {
+      ...current,
+      ...patch,
+      id: current.id,
+      code: current.code,
+      reservationId: current.reservationId,
+      updatedAt: now(),
+    };
+    await blobStore.setJSON(imageJobKey(id), next);
+    return next;
+  };
+
   const listCards = async () => {
     const { blobs } = await blobStore.list({ prefix: "cards/", consistency: "strong" });
     const cards = await Promise.all(
@@ -299,6 +346,9 @@ export const makeBlobLicenseStore = ({ blobStore, sessionSecret = "change-this-s
     requireCardSession,
     startUsage,
     completeUsage,
+    createImageJob,
+    getImageJob,
+    updateImageJob,
     listCards,
     updateCard,
     getCard,
