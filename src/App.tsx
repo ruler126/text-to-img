@@ -34,7 +34,7 @@ import {
   loadHistory,
   saveBlob,
 } from "./lib/storage";
-import type { ApiConfig, CardSession, ExportFormat, GenerateJob, HistoryItem, PlatformPreset, ReferenceImage } from "./types";
+import type { ApiConfig, ExportFormat, GenerateJob, HistoryItem, PlatformPreset, ReferenceImage } from "./types";
 
 const initialJob: GenerateJob = {
   mode: "text",
@@ -86,6 +86,12 @@ const prepareRevisionReference = async (blob: Blob): Promise<ReferenceImage> => 
   return prepareReferenceImage(file);
 };
 
+type PendingUsageConfirmation = {
+  reservationId: string;
+  resultId: string;
+  successNotice: string;
+};
+
 export function App() {
   const [apiConfig] = useState<ApiConfig>(emptyApiConfig);
   const [serverApiConfig, setServerApiConfig] = useState<ApiConfig | null>(null);
@@ -95,14 +101,20 @@ export function App() {
   const [referenceImage, setReferenceImage] = useState<ReferenceImage | null>(null);
   const [resultBlob, setResultBlob] = useState<Blob | null>(null);
   const [resultUrl, setResultUrl] = useState("");
+  const [displayedResultId, setDisplayedResultId] = useState("");
+  const [pendingUsage, setPendingUsage] = useState<PendingUsageConfirmation | null>(null);
   const [isResultPreviewOpen, setIsResultPreviewOpen] = useState(false);
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [isRevisingImage, setIsRevisingImage] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [showProductNameHint, setShowProductNameHint] = useState(false);
   const [operationStatus, setOperationStatus] = useState("");
   const [revisionPrompt, setRevisionPrompt] = useState("");
+  const productNameInputRef = useRef<HTMLInputElement | null>(null);
   const referenceInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingUsageRef = useRef<PendingUsageConfirmation | null>(null);
+  const finalizedUsageIdsRef = useRef<Set<string>>(new Set());
   const license = useCardLicense();
 
   const template = useMemo(
@@ -115,10 +127,10 @@ export function App() {
   );
   const prompt = useMemo(() => template.promptBuilder(job, preset), [job, preset, template]);
   const configReady = hasLocalApiConfig ? !validateConfig(apiConfig) : Boolean(serverApiConfig && !validateConfig(serverApiConfig));
-  const apiConfigSource = hasLocalApiConfig ? "前端配置" : serverApiConfig ? "服务器默认" : "未配置";
+  const apiConfigSource = hasLocalApiConfig ? "前端配置" : serverApiConfig ? "默认" : "未配置";
   const activeModel = hasLocalApiConfig ? apiConfig.model : serverApiConfig?.model ?? "";
   const processingBlockedReason = license.blockedReason;
-  const isProcessing = isGeneratingImage || isRevisingImage;
+  const isProcessing = isGeneratingImage || isRevisingImage || Boolean(pendingUsage);
 
   useEffect(() => {
     if (hasLocalApiConfig) return;
@@ -162,6 +174,60 @@ export function App() {
     setJob((current) => ({ ...current, [key]: value }));
   };
 
+  const setPendingUsageConfirmation = (next: PendingUsageConfirmation | null) => {
+    pendingUsageRef.current = next;
+    setPendingUsage(next);
+  };
+
+  const formatGenerationError = (caught: unknown, fallback: string) => {
+    if (!(caught instanceof Error)) return fallback;
+    if (/Failed to fetch|NetworkError|Load failed/i.test(caught.message)) {
+      return "图片生成时间太久，暂时没有完成。请稍后再试，未扣减兑换码次数。";
+    }
+    return caught.message || fallback;
+  };
+
+  const releaseUsageReservation = async (reservationId: string) => {
+    if (!reservationId || finalizedUsageIdsRef.current.has(reservationId)) return;
+    finalizedUsageIdsRef.current.add(reservationId);
+    await cardApi.finishUsage(reservationId, false).catch(() => undefined);
+    await license.refresh();
+  };
+
+  const releasePendingUsageIfAny = async () => {
+    const pending = pendingUsageRef.current;
+    if (!pending) return;
+    setPendingUsageConfirmation(null);
+    await releaseUsageReservation(pending.reservationId);
+  };
+
+  const confirmPendingUsage = async (resultId: string) => {
+    const pending = pendingUsageRef.current;
+    if (!pending || pending.resultId !== resultId || finalizedUsageIdsRef.current.has(pending.reservationId)) return;
+    finalizedUsageIdsRef.current.add(pending.reservationId);
+    setOperationStatus("正在确认兑换码次数...");
+    try {
+      const completedCard = await cardApi.finishUsage(pending.reservationId, true);
+      license.setCardFromUsage(completedCard);
+      setPendingUsageConfirmation(null);
+      setNotice(pending.successNotice);
+    } catch (caught) {
+      setPendingUsageConfirmation(null);
+      await license.refresh();
+      setError(formatGenerationError(caught, "图片已预览，但兑换码扣次确认失败，请刷新后检查剩余次数。"));
+    } finally {
+      setOperationStatus("");
+    }
+  };
+
+  const failPendingPreview = async (resultId: string) => {
+    const pending = pendingUsageRef.current;
+    if (!pending || pending.resultId !== resultId) return;
+    setPendingUsageConfirmation(null);
+    await releaseUsageReservation(pending.reservationId);
+    setError("图片预览加载失败，未扣减兑换码次数。");
+  };
+
   const handleGenerate = async (override?: GenerateJob, overrideReference?: ReferenceImage | null) => {
     const nextJob = override ?? job;
     const effectiveReference =
@@ -179,19 +245,21 @@ export function App() {
       return;
     }
     if (!nextJob.productName.trim()) {
-      setError("请先填写商品名称。");
+      setShowProductNameHint(true);
+      productNameInputRef.current?.focus();
       return;
     }
+    setShowProductNameHint(false);
     const imageUrls = effectiveReference ? [effectiveReference.dataUrl] : [];
     if (nextJob.mode === "reference" && imageUrls.length === 0) {
       setError("商品参考图模式需要先上传一张真实商品图。");
       return;
     }
 
+    await releasePendingUsageIfAny();
     setIsGeneratingImage(true);
     setOperationStatus("正在准备生成任务...");
     let reservationId = "";
-    let completedCard: CardSession | null = null;
     try {
       let imageBlob: Blob;
       const generationOptions = {
@@ -212,7 +280,7 @@ export function App() {
       } else {
         const result = await generateImageWithServerDefault(generationOptions);
         imageBlob = result.blob;
-        completedCard = result.card;
+        reservationId = result.reservation.id;
       }
       const imageBlobId = uid();
       const thumbnailBlobId = uid();
@@ -227,8 +295,9 @@ export function App() {
         referenceThumbnailBlobId && referenceThumbnail ? saveBlob(referenceThumbnailBlobId, referenceThumbnail) : Promise.resolve(),
       ]);
 
+      const itemId = uid();
       const item: HistoryItem = {
-        id: uid(),
+        id: itemId,
         createdAt: new Date().toISOString(),
         templateId: selectedTemplate.id,
         templateName: selectedTemplate.name,
@@ -243,23 +312,22 @@ export function App() {
         job: nextJob,
       };
       setHistory(await addHistoryItem(item));
+      setPendingUsageConfirmation({
+        reservationId,
+        resultId: itemId,
+        successNotice: "生成完成，已保存到本地历史。",
+      });
+      setDisplayedResultId(itemId);
       setResultBlob(imageBlob);
-      if (hasLocalApiConfig) {
-        completedCard = await cardApi.finishUsage(reservationId, true);
-      }
-      if (completedCard) {
-        license.setCardFromUsage(completedCard);
-      }
       setOperationStatus("");
-      setNotice("生成完成，已保存到本地历史。");
+      setNotice("图片已保存到本地历史，正在等待预览加载以确认扣次。");
     } catch (caught) {
-      if (hasLocalApiConfig && reservationId) {
-        await cardApi.finishUsage(reservationId, false).catch(() => undefined);
-        await license.refresh();
+      if (reservationId) {
+        await releaseUsageReservation(reservationId);
       } else {
         await license.refresh();
       }
-      setError(caught instanceof Error ? caught.message : "生成失败，请检查 API 配置。");
+      setError(formatGenerationError(caught, "生成失败，请检查 API 配置。"));
     } finally {
       setOperationStatus("");
       setIsGeneratingImage(false);
@@ -282,10 +350,10 @@ export function App() {
       return;
     }
 
+    await releasePendingUsageIfAny();
     setIsRevisingImage(true);
     setOperationStatus("正在准备续改参考图...");
     let reservationId = "";
-    let completedCard: CardSession | null = null;
     try {
       const selectedTemplate = imageTemplates.find((item) => item.id === job.templateId) ?? imageTemplates[0];
       const revisionText = revisionPrompt.trim();
@@ -316,7 +384,7 @@ export function App() {
       } else {
         const result = await generateImageWithServerDefault(generationOptions);
         imageBlob = result.blob;
-        completedCard = result.card;
+        reservationId = result.reservation.id;
       }
       const imageBlobId = uid();
       const thumbnailBlobId = uid();
@@ -331,8 +399,9 @@ export function App() {
         saveBlob(revisionThumbnailBlobId, revisionThumbnail),
       ]);
 
+      const itemId = uid();
       const item: HistoryItem = {
-        id: uid(),
+        id: itemId,
         createdAt: new Date().toISOString(),
         templateId: job.templateId,
         templateName: `${selectedTemplate.name} 续改`,
@@ -347,24 +416,23 @@ export function App() {
         job,
       };
       setHistory(await addHistoryItem(item));
+      setPendingUsageConfirmation({
+        reservationId,
+        resultId: itemId,
+        successNotice: "续改完成，已保存到本地历史。",
+      });
+      setDisplayedResultId(itemId);
       setResultBlob(imageBlob);
       setRevisionPrompt("");
-      if (hasLocalApiConfig) {
-        completedCard = await cardApi.finishUsage(reservationId, true);
-      }
-      if (completedCard) {
-        license.setCardFromUsage(completedCard);
-      }
       setOperationStatus("");
-      setNotice("续改完成，已保存到本地历史。");
+      setNotice("图片已保存到本地历史，正在等待预览加载以确认扣次。");
     } catch (caught) {
-      if (hasLocalApiConfig && reservationId) {
-        await cardApi.finishUsage(reservationId, false).catch(() => undefined);
-        await license.refresh();
+      if (reservationId) {
+        await releaseUsageReservation(reservationId);
       } else {
         await license.refresh();
       }
-      setError(caught instanceof Error ? caught.message : "续改失败，请检查 API 配置。");
+      setError(formatGenerationError(caught, "续改失败，请检查 API 配置。"));
     } finally {
       setOperationStatus("");
       setIsRevisingImage(false);
@@ -410,9 +478,11 @@ export function App() {
   };
 
   const openHistoryItem = async (item: HistoryItem) => {
+    await releasePendingUsageIfAny();
     const blob = await getBlob(item.imageBlobId);
     if (blob) {
       setResultBlob(blob);
+      setDisplayedResultId(item.id);
       setJob(item.job);
       if (item.referenceImageBlobId) {
         const referenceBlob = await getBlob(item.referenceImageBlobId);
@@ -623,10 +693,17 @@ export function App() {
           <div className="grid gap-4 md:grid-cols-2">
             <Field label="商品名称" required>
               <input
-                className="input"
+                ref={productNameInputRef}
+                className={`input ${showProductNameHint ? "border-coral focus:border-coral focus:ring-coral/20" : ""}`}
                 value={job.productName}
-                onChange={(event) => updateJob("productName", event.target.value)}
-                placeholder="例如：无线降噪耳机"
+                onChange={(event) => {
+                  updateJob("productName", event.target.value);
+                  if (event.target.value.trim()) {
+                    setShowProductNameHint(false);
+                  }
+                }}
+                placeholder={showProductNameHint ? "请输入商品名称" : "例如：无线降噪耳机"}
+                aria-invalid={showProductNameHint}
               />
             </Field>
             <Field label="商品类目">
@@ -752,7 +829,13 @@ export function App() {
                   onClick={() => setIsResultPreviewOpen(true)}
                   title="查看大图"
                 >
-                  <img src={resultUrl} alt="生成结果" className="max-h-full max-w-full rounded-md object-contain" />
+                  <img
+                    src={resultUrl}
+                    alt="生成结果"
+                    className="max-h-full max-w-full rounded-md object-contain"
+                    onLoad={() => void confirmPendingUsage(displayedResultId)}
+                    onError={() => void failPendingPreview(displayedResultId)}
+                  />
                   <span className="absolute right-2 top-2 grid h-9 w-9 place-items-center rounded-lg bg-white/90 text-slate-700 opacity-0 shadow transition group-hover:opacity-100 group-focus-visible:opacity-100">
                     <Maximize2 size={17} />
                   </span>
@@ -813,9 +896,11 @@ export function App() {
             onCopyPrompt={copyPrompt}
             onExport={exportHistoryItem}
             onClear={async () => {
+              await releasePendingUsageIfAny();
               await clearHistory();
               setHistory([]);
               setResultBlob(null);
+              setDisplayedResultId("");
               setNotice("历史记录已清空。");
             }}
           />

@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Download, Loader2, LockKeyhole, Plus, RefreshCcw } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Download, Loader2, LockKeyhole, Plus, RefreshCcw } from "lucide-react";
 import "./styles.css";
 import type { AdminCard } from "./types";
 import { adminApi } from "./card-license/api";
 
 const useOptions = [10, 20, 30, 50, 100];
+type SortKey = "createdAt" | "totalUses" | "lastLoginAt";
+type SortDirection = "asc" | "desc";
+type SortState = { key: SortKey; direction: SortDirection };
 
 function AdminApp() {
   const [password, setPassword] = useState("");
   const [isAuthed, setIsAuthed] = useState(false);
   const [cards, setCards] = useState<AdminCard[]>([]);
+  const [sort, setSort] = useState<SortState>({ key: "createdAt", direction: "desc" });
   const [totalUses, setTotalUses] = useState(10);
   const [count, setCount] = useState(10);
   const [note, setNote] = useState("");
@@ -27,6 +31,40 @@ function AdminApp() {
     [cards],
   );
 
+  const sortedCards = useMemo(() => {
+    const compareTime = (left?: string | null, right?: string | null) => {
+      if (!left && !right) return 0;
+      if (!left) return 1;
+      if (!right) return -1;
+      return Date.parse(left) - Date.parse(right);
+    };
+
+    return [...cards].sort((left, right) => {
+      const direction = sort.direction === "desc" ? -1 : 1;
+      let result = 0;
+
+      if (sort.key === "createdAt") {
+        result = compareTime(left.createdAt, right.createdAt);
+      } else if (sort.key === "totalUses") {
+        result = left.totalUses - right.totalUses;
+      } else {
+        result = compareTime(left.lastLoginAt, right.lastLoginAt);
+        if (!left.lastLoginAt || !right.lastLoginAt) {
+          return result;
+        }
+      }
+
+      return result === 0 ? left.code.localeCompare(right.code) : result * direction;
+    });
+  }, [cards, sort]);
+
+  const toggleSort = (key: SortKey) => {
+    setSort((current) => ({
+      key,
+      direction: current.key === key && current.direction === "desc" ? "asc" : "desc",
+    }));
+  };
+
   const loadCards = async () => {
     setIsBusy(true);
     setError("");
@@ -34,7 +72,7 @@ function AdminApp() {
       setCards(await adminApi.listCards());
       setIsAuthed(true);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "读取卡密失败。");
+      setError(caught instanceof Error ? caught.message : "读取兑换码失败。");
     } finally {
       setIsBusy(false);
     }
@@ -67,9 +105,9 @@ function AdminApp() {
     try {
       const created = await adminApi.createBatch({ totalUses, count, note });
       setCards((current) => [...created, ...current]);
-      setNotice(`已生成 ${created.length} 个卡密。`);
+      setNotice(`已生成 ${created.length} 个兑换码。`);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "生成卡密失败。");
+      setError(caught instanceof Error ? caught.message : "生成兑换码失败。");
     } finally {
       setIsBusy(false);
     }
@@ -99,7 +137,7 @@ function AdminApp() {
               <LockKeyhole size={20} />
             </div>
             <div>
-              <h1 className="text-xl font-semibold">卡密管理后台</h1>
+              <h1 className="text-xl font-semibold">兑换码管理后台</h1>
               <p className="text-sm text-slate-500">请输入管理员密码。</p>
             </div>
           </div>
@@ -125,8 +163,8 @@ function AdminApp() {
       <div className="mx-auto max-w-[1280px] space-y-4">
         <header className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-semibold">卡密管理后台</h1>
-            <p className="text-sm text-slate-500">生成、导出、启用或禁用图片处理卡密。</p>
+            <h1 className="text-2xl font-semibold">兑换码管理后台</h1>
+            <p className="text-sm text-slate-500">生成、导出、启用或禁用图片处理兑换码。</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button className="secondary-button" onClick={loadCards} disabled={isBusy}>
@@ -167,14 +205,14 @@ function AdminApp() {
             </label>
             <button className="primary-button w-full" disabled={isBusy}>
               {isBusy ? <Loader2 className="animate-spin" size={18} /> : <Plus size={18} />}
-              生成卡密
+              生成兑换码
             </button>
             {notice && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{notice}</div>}
             {error && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
           </form>
 
           <section className="grid gap-3 sm:grid-cols-3">
-            <Metric label="卡密总数" value={cards.length} />
+            <Metric label="兑换码总数" value={cards.length} />
             <Metric label="启用 / 禁用" value={`${summary.active} / ${summary.disabled}`} />
             <Metric label="剩余总次数" value={summary.remaining} />
           </section>
@@ -185,17 +223,17 @@ function AdminApp() {
             <table className="w-full min-w-[900px] border-collapse text-sm">
               <thead className="bg-mist text-left text-slate-600">
                 <tr>
-                  <th className="px-3 py-2">卡密</th>
-                  <th className="px-3 py-2">次数</th>
+                  <th className="px-3 py-2">兑换码</th>
+                  <SortableHeader label="次数" sortKey="totalUses" activeSort={sort} onSort={toggleSort} />
                   <th className="px-3 py-2">状态</th>
-                  <th className="px-3 py-2">创建时间</th>
-                  <th className="px-3 py-2">最近登录</th>
+                  <SortableHeader label="创建时间" sortKey="createdAt" activeSort={sort} onSort={toggleSort} />
+                  <SortableHeader label="最近登录" sortKey="lastLoginAt" activeSort={sort} onSort={toggleSort} />
                   <th className="px-3 py-2">备注</th>
                   <th className="px-3 py-2">操作</th>
                 </tr>
               </thead>
               <tbody>
-                {cards.map((card) => (
+                {sortedCards.map((card) => (
                   <tr key={card.code} className="border-t border-line">
                     <td className="px-3 py-2 font-semibold">{card.code}</td>
                     <td className="px-3 py-2">{card.remainingUses}/{card.totalUses}</td>
@@ -212,11 +250,40 @@ function AdminApp() {
                 ))}
               </tbody>
             </table>
-            {cards.length === 0 && <div className="p-6 text-center text-sm text-slate-500">暂无卡密</div>}
+            {cards.length === 0 && <div className="p-6 text-center text-sm text-slate-500">暂无兑换码</div>}
           </div>
         </section>
       </div>
     </main>
+  );
+}
+
+function SortableHeader({
+  label,
+  sortKey,
+  activeSort,
+  onSort,
+}: {
+  label: string;
+  sortKey: SortKey;
+  activeSort: SortState;
+  onSort: (key: SortKey) => void;
+}) {
+  const isActive = activeSort.key === sortKey;
+  const Icon = !isActive ? ArrowUpDown : activeSort.direction === "desc" ? ArrowDown : ArrowUp;
+  const ariaSort = !isActive ? "none" : activeSort.direction === "desc" ? "descending" : "ascending";
+
+  return (
+    <th className="px-3 py-2" aria-sort={ariaSort}>
+      <button
+        className={`inline-flex items-center gap-1.5 border-0 bg-transparent p-0 text-left font-semibold transition hover:text-accent ${isActive ? "text-accent" : "text-slate-600"}`}
+        type="button"
+        onClick={() => onSort(sortKey)}
+      >
+        {label}
+        <Icon size={14} />
+      </button>
+    </th>
   );
 }
 

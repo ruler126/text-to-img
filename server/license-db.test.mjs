@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { makeLicenseStore, HttpError } from "./license-db.mjs";
+import { createApiHandler } from "./api-handler.mjs";
 
 const makeStore = () => makeLicenseStore({ dbPath: ":memory:", sessionSecret: "test-secret" });
 
@@ -66,4 +67,159 @@ test("last available use can only be reserved once", () => {
   store.startUsage(login.token);
   assert.throws(() => store.startUsage(login.token), HttpError);
   store.close();
+});
+
+test("parallel reservations do not exceed remaining uses", async () => {
+  const store = makeStore();
+  try {
+    const [card] = store.createCards({ totalUses: 10, count: 1 });
+    const login = store.loginCard(card.code);
+    for (let index = 0; index < 9; index += 1) {
+      const reservation = store.startUsage(login.token);
+      store.completeUsage(login.token, reservation.id, true);
+    }
+
+    const attempts = await Promise.allSettled([
+      Promise.resolve().then(() => store.startUsage(login.token)),
+      Promise.resolve().then(() => store.startUsage(login.token)),
+      Promise.resolve().then(() => store.startUsage(login.token)),
+    ]);
+    assert.equal(attempts.filter((item) => item.status === "fulfilled").length, 1);
+    assert.equal(attempts.filter((item) => item.status === "rejected").length, 2);
+  } finally {
+    store.close();
+  }
+});
+
+test("server image proxy returns a pending reservation without confirming usage", async () => {
+  const store = makeStore();
+  const originalFetch = globalThis.fetch;
+  try {
+    const [card] = store.createCards({ totalUses: 10, count: 1 });
+    const login = store.loginCard(card.code);
+    globalThis.fetch = async (url) => {
+      assert.match(String(url), /\/images\/generations$/);
+      return new Response(JSON.stringify({ data: [{ b64_json: "AQID" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    const handler = createApiHandler({
+      store,
+      serverApiConfig: {
+        baseURL: "https://api.example.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+      },
+    });
+    const response = await handler(new Request("http://localhost/api/images/generations", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `card_session=${encodeURIComponent(login.token)}`,
+      },
+      body: JSON.stringify({
+        prompt: "make a product image",
+        size: "1024x1024",
+        ratio: "1:1",
+        quality: "standard",
+      }),
+    }));
+    assert.equal(response.status, 200);
+
+    const payload = await response.json();
+    assert.equal(payload.image.b64Json, "AQID");
+    assert.equal(payload.job.status, "completed");
+    assert.ok(payload.reservation.id);
+    assert.equal(payload.card, undefined);
+
+    let current = store.getCard(card.code);
+    assert.equal(current.usedUses, 0);
+    assert.equal(current.remainingUses, 10);
+
+    current = store.completeUsage(login.token, payload.reservation.id, true);
+    assert.equal(current.usedUses, 1);
+    assert.equal(current.remainingUses, 9);
+  } finally {
+    globalThis.fetch = originalFetch;
+    store.close();
+  }
+});
+
+test("server image proxy can complete an async upstream task without confirming usage", async () => {
+  const store = makeStore();
+  const originalFetch = globalThis.fetch;
+  try {
+    const [card] = store.createCards({ totalUses: 10, count: 1 });
+    const login = store.loginCard(card.code);
+    let fetchCount = 0;
+    globalThis.fetch = async (url) => {
+      fetchCount += 1;
+      if (String(url).endsWith("/images/generations")) {
+        return new Response(JSON.stringify({ data: { id: "upstream-task-1", status: "queued" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      assert.match(String(url), /\/tasks\/upstream-task-1$/);
+      return new Response(JSON.stringify({ data: { status: "completed", b64_json: "BAUG" } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    const handler = createApiHandler({
+      store,
+      serverApiConfig: {
+        baseURL: "https://api.example.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+      },
+    });
+    const headers = {
+      "Content-Type": "application/json",
+      Cookie: `card_session=${encodeURIComponent(login.token)}`,
+    };
+    const submitResponse = await handler(new Request("http://localhost/api/images/generations", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        prompt: "make a product image",
+        size: "1024x1024",
+        ratio: "1:1",
+        quality: "standard",
+      }),
+    }));
+    assert.equal(submitResponse.status, 200);
+
+    const submitPayload = await submitResponse.json();
+    assert.equal(submitPayload.job.status, "pending");
+    assert.equal(submitPayload.image, undefined);
+    assert.ok(submitPayload.reservation.id);
+
+    let current = store.getCard(card.code);
+    assert.equal(current.usedUses, 0);
+    assert.equal(current.remainingUses, 10);
+
+    const jobResponse = await handler(new Request(`http://localhost/api/images/jobs/${submitPayload.job.id}`, {
+      headers,
+    }));
+    assert.equal(jobResponse.status, 200);
+    const jobPayload = await jobResponse.json();
+    assert.equal(jobPayload.job.status, "completed");
+    assert.equal(jobPayload.image.b64Json, "BAUG");
+    assert.equal(fetchCount, 2);
+
+    current = store.getCard(card.code);
+    assert.equal(current.usedUses, 0);
+    assert.equal(current.remainingUses, 10);
+
+    current = store.completeUsage(login.token, submitPayload.reservation.id, true);
+    assert.equal(current.usedUses, 1);
+    assert.equal(current.remainingUses, 9);
+  } finally {
+    globalThis.fetch = originalFetch;
+    store.close();
+  }
 });

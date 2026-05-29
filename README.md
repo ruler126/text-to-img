@@ -1,6 +1,6 @@
 # 电商 AI 生图工作台
 
-一个电商图片生成网站应用。默认可通过后端环境变量配置 OpenAI-compatible 聚合 API；用户也可以在前端“API 设置”里填写自己的 `baseURL`、`apiKey` 和 `model` 覆盖服务器默认配置。
+一个适合部署在普通 Debian 服务器上的电商图片生成网站应用。图片生成 API 通过后端环境变量配置，兑换码、登录 session 和扣次记录保存在本机 SQLite 数据库中。
 
 ## 功能
 
@@ -14,8 +14,9 @@
 - IndexedDB 保存图片 Blob，localStorage 保存最多 20 条历史元数据
 - 支持打开历史、重新生成、复制提示词、原图下载、按规格导出 PNG/JPG
 - 使用 Canvas 在浏览器本地进行尺寸适配和导出
-- 支持 6 位卡密登录、剩余次数展示、成功生成/续改后扣减次数
-- 独立卡密管理后台支持批量生成 10/20/30/50/100 次卡密、启用/禁用、CSV/JSON 导出
+- 支持 6 位兑换码登录、剩余次数展示、成功预览后扣减次数
+- 独立兑换码管理后台支持批量生成 10/20/30/50/100 次兑换码、启用/禁用、CSV/JSON 导出
+- 后端图片生成采用提交任务后轮询结果，避免长时间阻塞单个请求
 
 ## 启动
 
@@ -87,7 +88,7 @@ npm run server
 http://127.0.0.1:8787/
 ```
 
-站长卡密管理页：
+站长兑换码管理页：
 
 ```text
 http://127.0.0.1:8787/admin.html
@@ -95,7 +96,7 @@ http://127.0.0.1:8787/admin.html
 
 ## 版本管理
 
-当前版本为 `v0.3.2`。
+当前版本为 `v0.3.7`。
 
 后续每次功能修改或修复，按下面的节奏管理版本：
 
@@ -140,12 +141,7 @@ Content-Type: application/json
 
 APIMart `gpt-image-2` 会使用异步任务模式，站点会自动轮询 `/tasks/{task_id}`。商品参考图模式会额外传入 `image_urls`，当前实现使用浏览器压缩后的 base64 data URI。
 
-使用后端环境默认配置时，图片生成会经由后端代理调用第三方 API，服务器 `API_KEY` 不会返回给浏览器。用户在前端“API 设置”中保存了自己的配置后，会优先使用前端配置并继续由浏览器直连第三方 API；这种模式仍要求第三方服务允许浏览器跨域请求。
-
-API 参数优先级：
-
-1. 当前浏览器在“API 设置”中保存的配置
-2. 后端环境变量默认配置：`API_BASE_URL`、`API_KEY`、`API_MODEL`
+使用后端环境默认配置时，图片生成会经由后端代理调用第三方 API，服务器 `API_KEY` 不会返回给浏览器。当前普通服务器分支暂不开放前端自定义 API 设置入口。
 
 兼容环境变量别名：`OPENAI_BASE_URL` / `IMAGE_API_BASE_URL`、`OPENAI_API_KEY` / `IMAGE_API_KEY`、`OPENAI_MODEL` / `IMAGE_API_MODEL`。
 
@@ -153,9 +149,9 @@ API 参数优先级：
 
 ## 本地数据
 
-- API 配置：`localStorage`
+- API 配置：后端环境变量
 - 历史元数据：`localStorage`
 - 图片和缩略图：`IndexedDB`
 - 历史最多保留 20 条，超出后自动删除最旧图片数据
-- 卡密数据：后端 SQLite，默认 `data/cards.sqlite`
-- 卡密登录：后端 HttpOnly Cookie session
+- 兑换码数据：后端 SQLite，默认 `data/cards.sqlite`
+- 兑换码登录：后端 HttpOnly Cookie session

@@ -2,6 +2,7 @@ import { randomBytes, createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { HttpError } from "./errors.mjs";
 
 const CARD_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -9,12 +10,7 @@ const NUMBERS = "23456789";
 const ALLOWED_TOTALS = new Set([10, 20, 30, 50, 100]);
 const RESERVATION_TTL_MS = 30 * 60 * 1000;
 
-export class HttpError extends Error {
-  constructor(status, message) {
-    super(message);
-    this.status = status;
-  }
-}
+export { HttpError };
 
 export const makeLicenseStore = ({ dbPath = "data/cards.sqlite", sessionSecret = "dev-secret" } = {}) => {
   if (dbPath !== ":memory:") {
@@ -53,6 +49,22 @@ export const makeLicenseStore = ({ dbPath = "data/cards.sqlite", sessionSecret =
       confirmed_at TEXT,
       FOREIGN KEY (code) REFERENCES cards(code)
     );
+
+    CREATE TABLE IF NOT EXISTS image_jobs (
+      id TEXT PRIMARY KEY,
+      code TEXT NOT NULL,
+      reservation_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      upstream_task_id TEXT,
+      image_url TEXT,
+      image_b64_json TEXT,
+      image_mime_type TEXT,
+      error TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      FOREIGN KEY (code) REFERENCES cards(code)
+    );
   `);
 
   const now = () => new Date().toISOString();
@@ -89,13 +101,13 @@ export const makeLicenseStore = ({ dbPath = "data/cards.sqlite", sessionSecret =
   const assertActiveUsableCard = (code) => {
     releaseExpiredReservations();
     const card = getCardRow(code);
-    if (!card) throw new HttpError(404, "卡密不存在。");
-    if (card.status !== "active") throw new HttpError(403, "卡密已被禁用。");
+    if (!card) throw new HttpError(404, "兑换码不存在。");
+    if (card.status !== "active") throw new HttpError(403, "兑换码已被禁用。");
     const pending =
       db.prepare("SELECT COUNT(*) AS count FROM usage_reservations WHERE code = ? AND status = 'pending'").get(card.code)
         .count ?? 0;
     const available = card.total_uses - card.used_uses - pending;
-    if (available <= 0) throw new HttpError(409, "当前卡密次数已用完。");
+    if (available <= 0) throw new HttpError(409, "当前兑换码次数已用完。");
     return card;
   };
 
@@ -129,7 +141,7 @@ export const makeLicenseStore = ({ dbPath = "data/cards.sqlite", sessionSecret =
       const code = chars.join("");
       if (!codeExists(code)) return code;
     }
-    throw new HttpError(500, "生成卡密失败，请重试。");
+    throw new HttpError(500, "生成兑换码失败，请重试。");
   };
 
   const createCards = ({ totalUses, count, note = "" }) => {
@@ -157,9 +169,9 @@ export const makeLicenseStore = ({ dbPath = "data/cards.sqlite", sessionSecret =
   const loginCard = (code) => {
     const normalized = String(code ?? "").trim().toUpperCase();
     const card = getCardRow(normalized);
-    if (!card) throw new HttpError(401, "卡密无效。");
-    if (card.status !== "active") throw new HttpError(403, "卡密已被禁用。");
-    if (card.total_uses - card.used_uses <= 0) throw new HttpError(409, "当前卡密次数已用完。");
+    if (!card) throw new HttpError(401, "兑换码无效。");
+    if (card.status !== "active") throw new HttpError(403, "兑换码已被禁用。");
+    if (card.total_uses - card.used_uses <= 0) throw new HttpError(409, "当前兑换码次数已用完。");
     db.prepare("UPDATE cards SET last_login_at = ? WHERE code = ?").run(now(), normalized);
     return {
       token: createSession({ kind: "card", code: normalized, ttlMs: 30 * 24 * 60 * 60 * 1000 }),
@@ -169,10 +181,10 @@ export const makeLicenseStore = ({ dbPath = "data/cards.sqlite", sessionSecret =
 
   const requireCardSession = (token) => {
     const session = getSession(token, "card");
-    if (!session?.code) throw new HttpError(401, "请先输入卡密登录。");
+    if (!session?.code) throw new HttpError(401, "请先输入兑换码。");
     const card = getCard(session.code);
-    if (!card) throw new HttpError(401, "卡密登录已失效。");
-    if (card.status !== "active") throw new HttpError(403, "卡密已被禁用。");
+    if (!card) throw new HttpError(401, "授权登录已失效。");
+    if (card.status !== "active") throw new HttpError(403, "兑换码已被禁用。");
     return card;
   };
 
@@ -237,11 +249,100 @@ export const makeLicenseStore = ({ dbPath = "data/cards.sqlite", sessionSecret =
   const updateCard = (code, patch) => {
     const normalized = String(code ?? "").trim().toUpperCase();
     const current = getCard(normalized);
-    if (!current) throw new HttpError(404, "卡密不存在。");
+    if (!current) throw new HttpError(404, "兑换码不存在。");
     const status = patch.status === "disabled" ? "disabled" : patch.status === "active" ? "active" : current.status;
     const note = patch.note === undefined ? current.note : String(patch.note ?? "").slice(0, 200);
     db.prepare("UPDATE cards SET status = ?, note = ? WHERE code = ?").run(status, note, normalized);
     return getCard(normalized);
+  };
+
+  const normalizeImageJob = (row) => {
+    if (!row) return null;
+    return {
+      id: row.id,
+      code: row.code,
+      reservationId: row.reservation_id,
+      status: row.status,
+      upstreamTaskId: row.upstream_task_id,
+      imageUrl: row.image_url,
+      image: row.image_b64_json
+        ? {
+            b64Json: row.image_b64_json,
+            mimeType: row.image_mime_type || "image/png",
+          }
+        : null,
+      error: row.error ?? "",
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      expiresAt: row.expires_at,
+    };
+  };
+
+  const getImageJobRow = (id) =>
+    db.prepare("SELECT * FROM image_jobs WHERE id = ?").get(String(id ?? ""));
+
+  const createImageJob = (token, job) => {
+    const card = requireCardSession(token);
+    if (job.code !== card.code) throw new HttpError(403, "无权访问该图片任务。");
+    const id = randomId();
+    const createdAt = now();
+    db.prepare(`
+      INSERT INTO image_jobs (
+        id, code, reservation_id, status, upstream_task_id, image_url,
+        image_b64_json, image_mime_type, error, created_at, updated_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      card.code,
+      job.reservationId,
+      job.status ?? "pending",
+      job.upstreamTaskId ?? null,
+      job.imageUrl ?? null,
+      job.image?.b64Json ?? null,
+      job.image?.mimeType ?? null,
+      job.error ?? "",
+      createdAt,
+      createdAt,
+      future(RESERVATION_TTL_MS),
+    );
+    return normalizeImageJob(getImageJobRow(id));
+  };
+
+  const getImageJob = (token, id) => {
+    const card = requireCardSession(token);
+    const row = getImageJobRow(id);
+    if (!row || row.code !== card.code) throw new HttpError(404, "图片任务不存在。");
+    if (new Date(row.expires_at).getTime() <= Date.now()) {
+      db.prepare("DELETE FROM image_jobs WHERE id = ?").run(row.id);
+      throw new HttpError(404, "图片任务已过期，请重新生成。");
+    }
+    return normalizeImageJob(row);
+  };
+
+  const updateImageJob = (token, id, patch) => {
+    const current = getImageJob(token, id);
+    const image = patch.image === undefined ? current.image : patch.image;
+    db.prepare(`
+      UPDATE image_jobs
+      SET status = ?,
+          upstream_task_id = ?,
+          image_url = ?,
+          image_b64_json = ?,
+          image_mime_type = ?,
+          error = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(
+      patch.status ?? current.status,
+      patch.upstreamTaskId === undefined ? current.upstreamTaskId : patch.upstreamTaskId,
+      patch.imageUrl === undefined ? current.imageUrl : patch.imageUrl,
+      image?.b64Json ?? null,
+      image?.mimeType ?? null,
+      patch.error === undefined ? current.error : patch.error,
+      now(),
+      current.id,
+    );
+    return normalizeImageJob(getImageJobRow(current.id));
   };
 
   const close = () => db.close();
@@ -254,6 +355,9 @@ export const makeLicenseStore = ({ dbPath = "data/cards.sqlite", sessionSecret =
     requireCardSession,
     startUsage,
     completeUsage,
+    createImageJob,
+    getImageJob,
+    updateImageJob,
     listCards,
     updateCard,
     getCard,
