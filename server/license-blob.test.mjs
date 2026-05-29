@@ -253,3 +253,80 @@ test("server image proxy can complete an async upstream task without confirming 
     await cleanup();
   }
 });
+
+test("server image proxy recognizes nested async task result shapes", async () => {
+  const { store, cleanup } = await makeStore();
+  const originalFetch = globalThis.fetch;
+  try {
+    const [card] = await store.createCards({ totalUses: 10, count: 1 });
+    const login = await store.loginCard(card.code);
+    globalThis.fetch = async (url) => {
+      const value = String(url);
+      if (value.endsWith("/images/generations")) {
+        return new Response(JSON.stringify({ data: [{ id: "nested-task-1", status: "queued" }] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (value.endsWith("/tasks/nested-task-1")) {
+        return new Response(JSON.stringify({
+          data: [{
+            status: "succeeded",
+            output: {
+              images: [{ url: "https://cdn.example.test/generated.png" }],
+            },
+          }],
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      assert.equal(value, "https://cdn.example.test/generated.png");
+      return new Response(Buffer.from([7, 8, 9]), {
+        status: 200,
+        headers: { "Content-Type": "image/png" },
+      });
+    };
+
+    const handler = createApiHandler({
+      store,
+      serverApiConfig: {
+        baseURL: "https://api.example.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+      },
+    });
+    const headers = {
+      "Content-Type": "application/json",
+      Cookie: `card_session=${encodeURIComponent(login.token)}`,
+    };
+    const submitResponse = await handler(new Request("http://localhost/api/images/generations", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        prompt: "make a product image",
+        size: "1024x1024",
+        ratio: "1:1",
+        quality: "standard",
+      }),
+    }));
+    assert.equal(submitResponse.status, 200);
+    const submitPayload = await submitResponse.json();
+    assert.equal(submitPayload.job.status, "pending");
+
+    const jobResponse = await handler(new Request(`http://localhost/api/images/jobs/${submitPayload.job.id}`, {
+      headers,
+    }));
+    assert.equal(jobResponse.status, 200);
+    const jobPayload = await jobResponse.json();
+    assert.equal(jobPayload.job.status, "completed");
+    assert.equal(jobPayload.image.b64Json, "BwgJ");
+
+    const current = await store.getCard(card.code);
+    assert.equal(current.usedUses, 0);
+    assert.equal(current.remainingUses, 10);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await cleanup();
+  }
+});

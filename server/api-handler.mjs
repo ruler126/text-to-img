@@ -109,11 +109,65 @@ const readJsonResponse = async (upstreamResponse, action) => {
   }
 };
 
+const collectPayloadObjects = (payload) => {
+  const objects = [];
+  const seen = new Set();
+  const visit = (value) => {
+    if (!value || typeof value !== "object" || seen.has(value)) return;
+    seen.add(value);
+    objects.push(value);
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    visit(value.data);
+    visit(value.result);
+    visit(value.output);
+    visit(value.image);
+    visit(value.images);
+    visit(value.response);
+  };
+  visit(payload);
+  return objects;
+};
+
+const normalizeTaskStatus = (status) => {
+  const value = String(status ?? "").trim().toLowerCase();
+  if (["completed", "complete", "succeeded", "success", "finished", "done"].includes(value)) return "completed";
+  if (["failed", "fail", "error", "errored", "cancelled", "canceled"].includes(value)) return "failed";
+  if (["pending", "queued", "queueing", "running", "processing", "in_progress", "submitted"].includes(value)) return "pending";
+  return "";
+};
+
+const extractTaskStatus = (payload) => {
+  for (const item of collectPayloadObjects(payload)) {
+    const status = normalizeTaskStatus(item.status ?? item.state ?? item.task_status ?? item.taskStatus);
+    if (status) return status;
+  }
+  return "";
+};
+
+const extractTaskError = (payload) => {
+  const item = collectPayloadObjects(payload).find((entry) => entry.error || entry.fail_reason || entry.failReason) ?? {};
+  return item.error?.message ?? item.fail_reason ?? item.failReason;
+};
+
+const extractBase64Image = (payload) => {
+  for (const image of collectPayloadObjects(payload)) {
+    const b64Json = image.b64_json ?? image.b64Json;
+    if (typeof b64Json === "string" && b64Json) {
+      return { b64Json, mimeType: image.mime_type ?? image.mimeType ?? "image/png" };
+    }
+  }
+  return null;
+};
+
 const extractImageUrl = (payload) => {
-  const image = payload?.data?.[0] ?? payload?.data ?? payload;
-  const url = image?.url ?? image?.image_url ?? image?.result?.images?.[0]?.url;
-  if (Array.isArray(url)) return url[0] ?? "";
-  if (typeof url === "string") return url;
+  for (const image of collectPayloadObjects(payload)) {
+    const url = image?.url ?? image?.image_url ?? image?.imageUrl ?? image?.result?.images?.[0]?.url ?? image?.images?.[0]?.url;
+    if (Array.isArray(url) && url[0]) return url[0];
+    if (typeof url === "string" && url) return url;
+  }
   return "";
 };
 
@@ -126,10 +180,9 @@ const fetchImageAsBase64 = async (url) => {
 };
 
 const extractImageState = (payload) => {
-  const image = payload?.data?.[0] ?? payload?.data ?? payload;
-
-  if (image?.b64_json) {
-    return { status: "completed", image: { b64Json: image.b64_json, mimeType: "image/png" } };
+  const base64Image = extractBase64Image(payload);
+  if (base64Image) {
+    return { status: "completed", image: base64Image };
   }
 
   const imageUrl = extractImageUrl(payload);
@@ -137,8 +190,10 @@ const extractImageState = (payload) => {
     return { status: "pending", imageUrl };
   }
 
-  const taskId = image?.task_id ?? image?.id ?? payload?.task_id;
-  if (taskId && image?.status !== "completed") {
+  const taskId = collectPayloadObjects(payload)
+    .map((item) => item.task_id ?? item.taskId ?? item.id)
+    .find((value) => value);
+  if (taskId && extractTaskStatus(payload) !== "completed") {
     return { status: "pending", upstreamTaskId: String(taskId) };
   }
 
@@ -204,21 +259,23 @@ const resolveImageJob = async ({ store, serverApiConfig, cookies, id }) => {
     headers: { Authorization: `Bearer ${serverApiConfig.apiKey}` },
   }, 15000, "查询图片任务");
   const payload = await readJsonResponse(upstreamResponse, "查询任务");
-  const data = payload?.data ?? payload;
-  const status = data?.status;
+  const status = extractTaskStatus(payload);
 
   if (status === "failed") {
-    const error = data?.error?.message ?? data?.fail_reason ?? "图片生成失败，请稍后再试。";
+    const error = extractTaskError(payload) ?? "图片生成失败，请稍后再试。";
     await store.updateImageJob(cookies.card_session, id, { status: "failed", error });
     throw new HttpError(502, error);
   }
 
-  if (status !== "completed") {
+  let state;
+  try {
+    state = extractImageState(payload);
+  } catch (error) {
+    if (status === "completed") throw error;
     job = await store.updateImageJob(cookies.card_session, id, { status: "pending" });
     return { job: publicImageJob(job) };
   }
 
-  const state = extractImageState(payload);
   if (state.imageUrl) {
     const image = await fetchImageAsBase64(state.imageUrl);
     job = await store.updateImageJob(cookies.card_session, id, {
@@ -228,6 +285,11 @@ const resolveImageJob = async ({ store, serverApiConfig, cookies, id }) => {
       imageUrl: null,
     });
     return { job: publicImageJob(job), image };
+  }
+
+  if (!state.image) {
+    job = await store.updateImageJob(cookies.card_session, id, { status: "pending" });
+    return { job: publicImageJob(job) };
   }
 
   job = await store.updateImageJob(cookies.card_session, id, {
