@@ -27,10 +27,10 @@ export const useCardLicense = () => {
     try {
       const nextCard = await cardApi.login(code);
       setCard(nextCard);
-      setMessage("卡密登录成功。");
+      setMessage("授权成功。");
     } catch (error) {
       setCard(null);
-      setMessage(error instanceof Error ? error.message : "卡密登录失败。");
+      setMessage(error instanceof Error ? error.message : "授权失败。");
     } finally {
       setIsLoading(false);
     }
@@ -39,17 +39,17 @@ export const useCardLicense = () => {
   const logout = async () => {
     await cardApi.logout().catch(() => undefined);
     setCard(null);
-    setMessage("已退出卡密登录。");
+    setMessage("已退出授权登录。");
   };
 
   const setCardFromUsage = (nextCard: CardSession) => {
     setCard(nextCard);
     if (nextCard.remainingUses <= 0) {
-      setMessage("当前卡密次数已用完。");
+      setMessage("当前兑换码次数已用完。");
     }
   };
 
-  const blockedReason = !card ? "请先输入卡密登录。" : card.remainingUses <= 0 ? "当前卡密次数已用完。" : "";
+  const blockedReason = !card ? "请先输入兑换码。" : card.remainingUses <= 0 ? "当前兑换码次数已用完。" : "";
 
   return {
     card,

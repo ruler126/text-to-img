@@ -30,7 +30,7 @@ export function CardLicensePanel({
           <span className="font-semibold">{card.code}</span>
           <span className="ml-2">剩余 {card.remainingUses}/{card.totalUses} 次</span>
         </div>
-        <button className="icon-button" type="button" onClick={onLogout} title="退出卡密登录">
+        <button className="icon-button" type="button" onClick={onLogout} title="退出授权登录">
           <LogOut size={17} />
         </button>
       </div>
@@ -43,7 +43,7 @@ export function CardLicensePanel({
         className="input h-10 w-36 uppercase"
         value={code}
         onChange={(event) => setCode(event.target.value.toUpperCase())}
-        placeholder="输入卡密"
+        placeholder="输入兑换码"
         maxLength={6}
       />
       <button className="secondary-button min-h-10 py-2" type="submit" disabled={isLoading || code.trim().length < 6}>

@@ -97,8 +97,8 @@ export const makeBlobLicenseStore = ({ blobStore, sessionSecret = "change-this-s
 
   const assertActiveCard = async (code) => {
     const card = await getCard(code);
-    if (!card) throw new HttpError(404, "卡密不存在。");
-    if (card.status !== "active") throw new HttpError(403, "卡密已被禁用。");
+    if (!card) throw new HttpError(404, "兑换码不存在。");
+    if (card.status !== "active") throw new HttpError(403, "兑换码已被禁用。");
     return card;
   };
 
@@ -137,7 +137,7 @@ export const makeBlobLicenseStore = ({ blobStore, sessionSecret = "change-this-s
       if (!chars.some((char) => NUMBERS.includes(char))) continue;
       return chars.join("");
     }
-    throw new HttpError(500, "生成卡密失败，请重试。");
+    throw new HttpError(500, "生成兑换码失败，请重试。");
   };
 
   const createCards = async ({ totalUses, count, note = "" }) => {
@@ -166,7 +166,7 @@ export const makeBlobLicenseStore = ({ blobStore, sessionSecret = "change-this-s
           throw error;
         }
       }
-      if (!createdCard) throw new HttpError(500, "生成卡密失败，请重试。");
+      if (!createdCard) throw new HttpError(500, "生成兑换码失败，请重试。");
       created.push(createdCard);
     }
     return created;
@@ -175,7 +175,7 @@ export const makeBlobLicenseStore = ({ blobStore, sessionSecret = "change-this-s
   const loginCard = async (code) => {
     const normalized = normalizeCode(code);
     const card = await assertActiveCard(normalized);
-    if (card.remainingUses <= 0) throw new HttpError(409, "当前卡密次数已用完。");
+    if (card.remainingUses <= 0) throw new HttpError(409, "当前兑换码次数已用完。");
     const record = await getCardRecord(normalized);
     await blobStore.setJSON(cardKey(normalized), { ...record, lastLoginAt: now() });
     return {
@@ -186,10 +186,10 @@ export const makeBlobLicenseStore = ({ blobStore, sessionSecret = "change-this-s
 
   const requireCardSession = async (token) => {
     const session = await getSession(token, "card");
-    if (!session?.code) throw new HttpError(401, "请先输入卡密登录。");
+    if (!session?.code) throw new HttpError(401, "请先输入兑换码。");
     const card = await getCard(session.code);
-    if (!card) throw new HttpError(401, "卡密登录已失效。");
-    if (card.status !== "active") throw new HttpError(403, "卡密已被禁用。");
+    if (!card) throw new HttpError(401, "授权登录已失效。");
+    if (card.status !== "active") throw new HttpError(403, "兑换码已被禁用。");
     return card;
   };
 
@@ -207,7 +207,7 @@ export const makeBlobLicenseStore = ({ blobStore, sessionSecret = "change-this-s
     const card = await requireCardSession(token);
     await deleteExpiredPendingReservations(card.code);
     const { confirmed, pending } = await getUsageStats(card.code);
-    if (card.totalUses - confirmed - pending <= 0) throw new HttpError(409, "当前卡密次数已用完。");
+    if (card.totalUses - confirmed - pending <= 0) throw new HttpError(409, "当前兑换码次数已用完。");
 
     for (let slot = 0; slot < card.totalUses; slot += 1) {
       const key = slotKey(card.code, slot);
@@ -233,7 +233,7 @@ export const makeBlobLicenseStore = ({ blobStore, sessionSecret = "change-this-s
       }
     }
 
-    throw new HttpError(409, "当前卡密次数已用完。");
+    throw new HttpError(409, "当前兑换码次数已用完。");
   };
 
   const completeUsage = async (token, id, success) => {
@@ -272,7 +272,7 @@ export const makeBlobLicenseStore = ({ blobStore, sessionSecret = "change-this-s
   const updateCard = async (code, patch) => {
     const normalized = normalizeCode(code);
     const current = await getCardRecord(normalized);
-    if (!current) throw new HttpError(404, "卡密不存在。");
+    if (!current) throw new HttpError(404, "兑换码不存在。");
     const status = patch.status === "disabled" ? "disabled" : patch.status === "active" ? "active" : current.status;
     const note = patch.note === undefined ? current.note : String(patch.note ?? "").slice(0, 200);
     await blobStore.setJSON(cardKey(normalized), { ...current, status, note });

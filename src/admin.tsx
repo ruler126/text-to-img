@@ -34,7 +34,7 @@ function AdminApp() {
       setCards(await adminApi.listCards());
       setIsAuthed(true);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "读取卡密失败。");
+      setError(caught instanceof Error ? caught.message : "读取兑换码失败。");
     } finally {
       setIsBusy(false);
     }
@@ -67,9 +67,9 @@ function AdminApp() {
     try {
       const created = await adminApi.createBatch({ totalUses, count, note });
       setCards((current) => [...created, ...current]);
-      setNotice(`已生成 ${created.length} 个卡密。`);
+      setNotice(`已生成 ${created.length} 个兑换码。`);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "生成卡密失败。");
+      setError(caught instanceof Error ? caught.message : "生成兑换码失败。");
     } finally {
       setIsBusy(false);
     }
@@ -99,7 +99,7 @@ function AdminApp() {
               <LockKeyhole size={20} />
             </div>
             <div>
-              <h1 className="text-xl font-semibold">卡密管理后台</h1>
+              <h1 className="text-xl font-semibold">兑换码管理后台</h1>
               <p className="text-sm text-slate-500">请输入管理员密码。</p>
             </div>
           </div>
@@ -125,8 +125,8 @@ function AdminApp() {
       <div className="mx-auto max-w-[1280px] space-y-4">
         <header className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-semibold">卡密管理后台</h1>
-            <p className="text-sm text-slate-500">生成、导出、启用或禁用图片处理卡密。</p>
+            <h1 className="text-2xl font-semibold">兑换码管理后台</h1>
+            <p className="text-sm text-slate-500">生成、导出、启用或禁用图片处理兑换码。</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button className="secondary-button" onClick={loadCards} disabled={isBusy}>
@@ -167,14 +167,14 @@ function AdminApp() {
             </label>
             <button className="primary-button w-full" disabled={isBusy}>
               {isBusy ? <Loader2 className="animate-spin" size={18} /> : <Plus size={18} />}
-              生成卡密
+              生成兑换码
             </button>
             {notice && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{notice}</div>}
             {error && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
           </form>
 
           <section className="grid gap-3 sm:grid-cols-3">
-            <Metric label="卡密总数" value={cards.length} />
+            <Metric label="兑换码总数" value={cards.length} />
             <Metric label="启用 / 禁用" value={`${summary.active} / ${summary.disabled}`} />
             <Metric label="剩余总次数" value={summary.remaining} />
           </section>
@@ -185,7 +185,7 @@ function AdminApp() {
             <table className="w-full min-w-[900px] border-collapse text-sm">
               <thead className="bg-mist text-left text-slate-600">
                 <tr>
-                  <th className="px-3 py-2">卡密</th>
+                  <th className="px-3 py-2">兑换码</th>
                   <th className="px-3 py-2">次数</th>
                   <th className="px-3 py-2">状态</th>
                   <th className="px-3 py-2">创建时间</th>
@@ -212,7 +212,7 @@ function AdminApp() {
                 ))}
               </tbody>
             </table>
-            {cards.length === 0 && <div className="p-6 text-center text-sm text-slate-500">暂无卡密</div>}
+            {cards.length === 0 && <div className="p-6 text-center text-sm text-slate-500">暂无兑换码</div>}
           </div>
         </section>
       </div>
