@@ -115,7 +115,7 @@ export function App() {
   );
   const prompt = useMemo(() => template.promptBuilder(job, preset), [job, preset, template]);
   const configReady = hasLocalApiConfig ? !validateConfig(apiConfig) : Boolean(serverApiConfig && !validateConfig(serverApiConfig));
-  const apiConfigSource = hasLocalApiConfig ? "前端配置" : serverApiConfig ? "服务器默认" : "未配置";
+  const apiConfigSource = hasLocalApiConfig ? "前端配置" : serverApiConfig ? "默认" : "未配置";
   const activeModel = hasLocalApiConfig ? apiConfig.model : serverApiConfig?.model ?? "";
   const processingBlockedReason = license.blockedReason;
   const isProcessing = isGeneratingImage || isRevisingImage;
