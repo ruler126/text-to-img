@@ -125,7 +125,7 @@ IMAGE_PROXY_BODY_LIMIT_MB=6
    ```bash
    git switch codex/edgeone-pages
    git push -u origin codex/edgeone-pages
-   git push origin v0.4.0-edgeone.2
+   git push origin v0.4.0-edgeone.3
    ```
 2. 在 EdgeOne Pages 新建项目，选择“导入 Git 仓库”，分支选择 `codex/edgeone-pages`。
 3. 构建配置使用 `edgeone.json`；如需手动填写，则安装命令为 `npm install`，构建命令为 `npm run build`，输出目录为 `dist`，Node.js 版本为 `20.18.0`。
@@ -135,7 +135,7 @@ IMAGE_PROXY_BODY_LIMIT_MB=6
 
 ## 版本管理
 
-当前 EdgeOne 分支版本为 `v0.4.0-edgeone.2`。
+当前 EdgeOne 分支版本为 `v0.4.0-edgeone.3`。
 
 后续每次功能修改或修复，按下面的节奏管理版本：
 
