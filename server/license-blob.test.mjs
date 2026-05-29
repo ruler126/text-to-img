@@ -192,7 +192,7 @@ test("server image proxy can complete an async upstream task without confirming 
           headers: { "Content-Type": "application/json" },
         });
       }
-      assert.match(String(url), /\/tasks\/upstream-task-1$/);
+      assert.match(String(url), /\/tasks\/upstream-task-1\?language=zh$/);
       return new Response(JSON.stringify({ data: { status: "completed", b64_json: "BAUG" } }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -268,7 +268,7 @@ test("server image proxy recognizes nested async task result shapes", async () =
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (value.endsWith("/tasks/nested-task-1")) {
+      if (value.endsWith("/tasks/nested-task-1?language=zh")) {
         return new Response(JSON.stringify({
           data: [{
             status: "succeeded",
@@ -348,7 +348,7 @@ test("server image proxy recognizes APIMart completed task response", async () =
           headers: { "Content-Type": "application/json" },
         });
       }
-      if (value.endsWith("/tasks/task_apimart_1")) {
+      if (value.endsWith("/tasks/task_apimart_1?language=zh")) {
         return new Response(JSON.stringify({
           code: 200,
           data: {
