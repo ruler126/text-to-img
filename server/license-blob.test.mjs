@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeFileBlobStore } from "./file-blob-store.mjs";
 import { makeBlobLicenseStore } from "./license-blob.mjs";
+import { createApiHandler } from "./api-handler.mjs";
 import { HttpError } from "./errors.mjs";
 
 const makeStore = async () => {
@@ -116,6 +117,61 @@ test("parallel reservations do not exceed remaining uses", async () => {
     assert.equal(attempts.filter((item) => item.status === "fulfilled").length, 1);
     assert.equal(attempts.filter((item) => item.status === "rejected").length, 2);
   } finally {
+    await cleanup();
+  }
+});
+
+test("server image proxy returns a pending reservation without confirming usage", async () => {
+  const { store, cleanup } = await makeStore();
+  const originalFetch = globalThis.fetch;
+  try {
+    const [card] = await store.createCards({ totalUses: 10, count: 1 });
+    const login = await store.loginCard(card.code);
+    globalThis.fetch = async (url) => {
+      assert.match(String(url), /\/images\/generations$/);
+      return new Response(JSON.stringify({ data: [{ b64_json: "AQID" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    const handler = createApiHandler({
+      store,
+      serverApiConfig: {
+        baseURL: "https://api.example.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+      },
+    });
+    const response = await handler(new Request("http://localhost/api/images/generations", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: `card_session=${encodeURIComponent(login.token)}`,
+      },
+      body: JSON.stringify({
+        prompt: "make a product image",
+        size: "1024x1024",
+        ratio: "1:1",
+        quality: "standard",
+      }),
+    }));
+    assert.equal(response.status, 200);
+
+    const payload = await response.json();
+    assert.equal(payload.image.b64Json, "AQID");
+    assert.ok(payload.reservation.id);
+    assert.equal(payload.card, undefined);
+
+    let current = await store.getCard(card.code);
+    assert.equal(current.usedUses, 0);
+    assert.equal(current.remainingUses, 10);
+
+    current = await store.completeUsage(login.token, payload.reservation.id, true);
+    assert.equal(current.usedUses, 1);
+    assert.equal(current.remainingUses, 9);
+  } finally {
+    globalThis.fetch = originalFetch;
     await cleanup();
   }
 });

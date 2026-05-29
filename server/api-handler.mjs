@@ -89,7 +89,7 @@ const fetchWithTimeout = async (url, options, timeoutMs, action) => {
     if (cause?.name === "AbortError") {
       throw new HttpError(504, `${action}超时，请稍后重试。`);
     }
-    throw cause;
+    throw new HttpError(502, `${action}连接失败，请检查网络、上游 API 地址或部署函数运行状态。`);
   } finally {
     clearTimeout(timeout);
   }
@@ -218,8 +218,7 @@ const generateImageForCard = async ({ store, serverApiConfig, body, cookies }) =
   const reservation = await store.startUsage(cookies.card_session);
   try {
     const image = await generateImageWithServerDefault(body, serverApiConfig);
-    const card = await store.completeUsage(cookies.card_session, reservation.id, true);
-    return { image, card };
+    return { image, reservation };
   } catch (error) {
     try {
       await store.completeUsage(cookies.card_session, reservation.id, false);

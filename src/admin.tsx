@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Download, Loader2, LockKeyhole, Plus, RefreshCcw } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Download, Loader2, LockKeyhole, Plus, RefreshCcw } from "lucide-react";
 import "./styles.css";
 import type { AdminCard } from "./types";
 import { adminApi } from "./card-license/api";
 
 const useOptions = [10, 20, 30, 50, 100];
+type SortKey = "createdAt" | "totalUses" | "lastLoginAt";
+type SortDirection = "asc" | "desc";
+type SortState = { key: SortKey; direction: SortDirection };
 
 function AdminApp() {
   const [password, setPassword] = useState("");
   const [isAuthed, setIsAuthed] = useState(false);
   const [cards, setCards] = useState<AdminCard[]>([]);
+  const [sort, setSort] = useState<SortState>({ key: "createdAt", direction: "desc" });
   const [totalUses, setTotalUses] = useState(10);
   const [count, setCount] = useState(10);
   const [note, setNote] = useState("");
@@ -26,6 +30,40 @@ function AdminApp() {
     }),
     [cards],
   );
+
+  const sortedCards = useMemo(() => {
+    const compareTime = (left?: string | null, right?: string | null) => {
+      if (!left && !right) return 0;
+      if (!left) return 1;
+      if (!right) return -1;
+      return Date.parse(left) - Date.parse(right);
+    };
+
+    return [...cards].sort((left, right) => {
+      const direction = sort.direction === "desc" ? -1 : 1;
+      let result = 0;
+
+      if (sort.key === "createdAt") {
+        result = compareTime(left.createdAt, right.createdAt);
+      } else if (sort.key === "totalUses") {
+        result = left.totalUses - right.totalUses;
+      } else {
+        result = compareTime(left.lastLoginAt, right.lastLoginAt);
+        if (!left.lastLoginAt || !right.lastLoginAt) {
+          return result;
+        }
+      }
+
+      return result === 0 ? left.code.localeCompare(right.code) : result * direction;
+    });
+  }, [cards, sort]);
+
+  const toggleSort = (key: SortKey) => {
+    setSort((current) => ({
+      key,
+      direction: current.key === key && current.direction === "desc" ? "asc" : "desc",
+    }));
+  };
 
   const loadCards = async () => {
     setIsBusy(true);
@@ -186,16 +224,16 @@ function AdminApp() {
               <thead className="bg-mist text-left text-slate-600">
                 <tr>
                   <th className="px-3 py-2">兑换码</th>
-                  <th className="px-3 py-2">次数</th>
+                  <SortableHeader label="次数" sortKey="totalUses" activeSort={sort} onSort={toggleSort} />
                   <th className="px-3 py-2">状态</th>
-                  <th className="px-3 py-2">创建时间</th>
-                  <th className="px-3 py-2">最近登录</th>
+                  <SortableHeader label="创建时间" sortKey="createdAt" activeSort={sort} onSort={toggleSort} />
+                  <SortableHeader label="最近登录" sortKey="lastLoginAt" activeSort={sort} onSort={toggleSort} />
                   <th className="px-3 py-2">备注</th>
                   <th className="px-3 py-2">操作</th>
                 </tr>
               </thead>
               <tbody>
-                {cards.map((card) => (
+                {sortedCards.map((card) => (
                   <tr key={card.code} className="border-t border-line">
                     <td className="px-3 py-2 font-semibold">{card.code}</td>
                     <td className="px-3 py-2">{card.remainingUses}/{card.totalUses}</td>
@@ -217,6 +255,35 @@ function AdminApp() {
         </section>
       </div>
     </main>
+  );
+}
+
+function SortableHeader({
+  label,
+  sortKey,
+  activeSort,
+  onSort,
+}: {
+  label: string;
+  sortKey: SortKey;
+  activeSort: SortState;
+  onSort: (key: SortKey) => void;
+}) {
+  const isActive = activeSort.key === sortKey;
+  const Icon = !isActive ? ArrowUpDown : activeSort.direction === "desc" ? ArrowDown : ArrowUp;
+  const ariaSort = !isActive ? "none" : activeSort.direction === "desc" ? "descending" : "ascending";
+
+  return (
+    <th className="px-3 py-2" aria-sort={ariaSort}>
+      <button
+        className={`inline-flex items-center gap-1.5 border-0 bg-transparent p-0 text-left font-semibold transition hover:text-accent ${isActive ? "text-accent" : "text-slate-600"}`}
+        type="button"
+        onClick={() => onSort(sortKey)}
+      >
+        {label}
+        <Icon size={14} />
+      </button>
+    </th>
   );
 }
 

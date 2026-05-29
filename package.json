@@ -1,6 +1,6 @@
 {
   "name": "ecommerce-ai-image-studio",
-  "version": "0.4.0-edgeone.3",
+  "version": "0.4.0-edgeone.4",
   "private": true,
   "type": "module",
   "scripts": {

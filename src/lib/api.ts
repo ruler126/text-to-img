@@ -1,4 +1,4 @@
-import type { ApiConfig, CardSession } from "../types";
+import type { ApiConfig, UsageReservation } from "../types";
 import { base64ToBlob } from "./image";
 
 const normalizeBaseUrl = (baseURL: string) => baseURL.replace(/\/+$/, "");
@@ -17,7 +17,10 @@ const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs: nu
     if (cause instanceof DOMException && cause.name === "AbortError") {
       throw new Error(`${action}超时，请稍后重试或重新发起任务。`);
     }
-    throw cause;
+    throw new Error(
+      `${action}连接失败。请检查网站服务是否正常运行、网络是否中断，或部署函数是否超时；如果直接连接第三方 API，也请确认 CORS 允许浏览器访问。`,
+      { cause },
+    );
   } finally {
     window.clearTimeout(timeout);
   }
@@ -139,7 +142,7 @@ export const generateImageWithServerDefault = async ({
   quality: string;
   imageUrls?: string[];
   onProgress?: ProgressHandler;
-}): Promise<{ blob: Blob; card: CardSession }> => {
+}): Promise<{ blob: Blob; reservation: UsageReservation }> => {
   onProgress?.("正在通过服务器提交图片任务...");
   const requestBody = JSON.stringify({ prompt, size, ratio, quality, imageUrls });
   const requestBytes = new TextEncoder().encode(requestBody).byteLength;
@@ -154,15 +157,15 @@ export const generateImageWithServerDefault = async ({
   }, 240000, "生成");
   const payload = await readJsonResponse(response, "生成") as {
     image?: { b64Json?: string; mimeType?: string };
-    card?: CardSession;
+    reservation?: UsageReservation;
   };
-  if (!payload.image?.b64Json || !payload.card) {
-    throw new Error("服务器代理响应中没有找到图片或点卡数据。");
+  if (!payload.image?.b64Json || !payload.reservation) {
+    throw new Error("服务器代理响应中没有找到图片或预占记录。");
   }
   onProgress?.("正在处理返回图片...");
   return {
     blob: base64ToBlob(payload.image.b64Json, payload.image.mimeType ?? "image/png"),
-    card: payload.card,
+    reservation: payload.reservation,
   };
 };
 
