@@ -64,6 +64,18 @@ const normalizeBaseUrl = (baseURL) => String(baseURL ?? "").replace(/\/+$/, "");
 const isApimartLike = (serverApiConfig) =>
   serverApiConfig.baseURL.includes("apimart.ai") || serverApiConfig.model.toLowerCase().includes("gpt-image-2");
 
+const logImageJob = (event, details = {}) => {
+  console.info(`[image-job] ${event} ${JSON.stringify(details)}`);
+};
+
+const safeUrlHost = (url) => {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
+};
+
 const publicDefaultApiConfig = (serverApiConfig) => ({
   baseURL: serverApiConfig.baseURL,
   model: serverApiConfig.model,
@@ -162,6 +174,11 @@ const extractBase64Image = (payload) => {
   return null;
 };
 
+const extractTaskId = (payload) =>
+  collectPayloadObjects(payload)
+    .map((item) => item.task_id ?? item.taskId ?? item.id)
+    .find((value) => value);
+
 const extractImageUrl = (payload) => {
   for (const image of collectPayloadObjects(payload)) {
     const url = image?.url ?? image?.image_url ?? image?.imageUrl ?? image?.result?.images?.[0]?.url ?? image?.images?.[0]?.url;
@@ -171,11 +188,25 @@ const extractImageUrl = (payload) => {
   return "";
 };
 
+const summarizeImagePayload = (payload) => {
+  const imageUrl = extractImageUrl(payload);
+  return {
+    status: extractTaskStatus(payload) || undefined,
+    taskId: extractTaskId(payload) ? String(extractTaskId(payload)) : undefined,
+    progress: collectPayloadObjects(payload).map((item) => item.progress).find((value) => value !== undefined),
+    hasImageUrl: Boolean(imageUrl),
+    imageHost: imageUrl ? safeUrlHost(imageUrl) : undefined,
+    hasBase64: Boolean(extractBase64Image(payload)),
+  };
+};
+
 const fetchImageAsBase64 = async (url) => {
+  logImageJob("download.start", { host: safeUrlHost(url) });
   const upstreamResponse = await fetchWithTimeout(url, {}, 20000, "下载生成图片");
   if (!upstreamResponse.ok) throw new HttpError(502, `下载生成图片失败：HTTP ${upstreamResponse.status}`);
   const mimeType = (upstreamResponse.headers.get("content-type") ?? "image/png").split(";")[0] || "image/png";
   const buffer = Buffer.from(await upstreamResponse.arrayBuffer());
+  logImageJob("download.completed", { mimeType, bytes: buffer.byteLength });
   return { b64Json: buffer.toString("base64"), mimeType };
 };
 
@@ -190,9 +221,7 @@ const extractImageState = (payload) => {
     return { status: "pending", imageUrl };
   }
 
-  const taskId = collectPayloadObjects(payload)
-    .map((item) => item.task_id ?? item.taskId ?? item.id)
-    .find((value) => value);
+  const taskId = extractTaskId(payload);
   if (taskId && extractTaskStatus(payload) !== "completed") {
     return { status: "pending", upstreamTaskId: String(taskId) };
   }
@@ -228,7 +257,15 @@ const submitImageGeneration = async (body, serverApiConfig) => {
     }),
   }, 25000, "提交生成任务");
   const payload = await readJsonResponse(upstreamResponse, "生成");
-  return extractImageState(payload);
+  logImageJob("submit.upstream", summarizeImagePayload(payload));
+  const state = extractImageState(payload);
+  logImageJob("submit.local", {
+    status: state.status,
+    upstreamTaskId: state.upstreamTaskId,
+    hasImageUrl: Boolean(state.imageUrl),
+    hasImage: Boolean(state.image),
+  });
+  return state;
 };
 
 const publicImageJob = (job) => ({
@@ -239,6 +276,13 @@ const publicImageJob = (job) => ({
 
 const resolveImageJob = async ({ store, serverApiConfig, cookies, id }) => {
   let job = await store.getImageJob(cookies.card_session, id);
+  logImageJob("poll.local", {
+    id,
+    status: job.status,
+    upstreamTaskId: job.upstreamTaskId,
+    hasImageUrl: Boolean(job.imageUrl),
+    hasImage: Boolean(job.image),
+  });
   if (job.status === "completed") return { job: publicImageJob(job), image: job.image };
   if (job.status === "failed") throw new HttpError(502, job.error || "图片生成失败，请稍后再试。");
 
@@ -260,6 +304,7 @@ const resolveImageJob = async ({ store, serverApiConfig, cookies, id }) => {
   }, 15000, "查询图片任务");
   const payload = await readJsonResponse(upstreamResponse, "查询任务");
   const status = extractTaskStatus(payload);
+  logImageJob("poll.upstream", { id, ...summarizeImagePayload(payload) });
 
   if (status === "failed") {
     const error = extractTaskError(payload) ?? "图片生成失败，请稍后再试。";
@@ -284,6 +329,7 @@ const resolveImageJob = async ({ store, serverApiConfig, cookies, id }) => {
       upstreamTaskId: null,
       imageUrl: null,
     });
+    logImageJob("poll.completed", { id, source: "url" });
     return { job: publicImageJob(job), image };
   }
 
@@ -298,6 +344,7 @@ const resolveImageJob = async ({ store, serverApiConfig, cookies, id }) => {
     upstreamTaskId: null,
     imageUrl: null,
   });
+  logImageJob("poll.completed", { id, source: "base64" });
   return { job: publicImageJob(job), image: state.image };
 };
 
@@ -433,6 +480,14 @@ export const createApiHandler = ({
       return await handleApi(request);
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500;
+      const url = new URL(request.url);
+      if (url.pathname.startsWith("/api/images/")) {
+        logImageJob("api.error", {
+          path: url.pathname,
+          status,
+          message: error instanceof Error ? error.message : "服务端错误。",
+        });
+      }
       return response(status, { error: error instanceof Error ? error.message : "服务端错误。" });
     }
   };

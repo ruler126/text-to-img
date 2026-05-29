@@ -330,3 +330,88 @@ test("server image proxy recognizes nested async task result shapes", async () =
     await cleanup();
   }
 });
+
+test("server image proxy recognizes APIMart completed task response", async () => {
+  const { store, cleanup } = await makeStore();
+  const originalFetch = globalThis.fetch;
+  try {
+    const [card] = await store.createCards({ totalUses: 10, count: 1 });
+    const login = await store.loginCard(card.code);
+    globalThis.fetch = async (url) => {
+      const value = String(url);
+      if (value.endsWith("/images/generations")) {
+        return new Response(JSON.stringify({
+          code: 200,
+          data: [{ status: "submitted", task_id: "task_apimart_1" }],
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (value.endsWith("/tasks/task_apimart_1")) {
+        return new Response(JSON.stringify({
+          code: 200,
+          data: {
+            id: "task_apimart_1",
+            status: "completed",
+            progress: 100,
+            result: {
+              images: [{
+                url: ["https://upload.apimart.ai/f/image/generated.png"],
+              }],
+            },
+          },
+        }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      assert.equal(value, "https://upload.apimart.ai/f/image/generated.png");
+      return new Response(Buffer.from([10, 11, 12]), {
+        status: 200,
+        headers: { "Content-Type": "image/png" },
+      });
+    };
+
+    const handler = createApiHandler({
+      store,
+      serverApiConfig: {
+        baseURL: "https://api.apimart.ai/v1",
+        apiKey: "test-key",
+        model: "gpt-image-2",
+      },
+    });
+    const headers = {
+      "Content-Type": "application/json",
+      Cookie: `card_session=${encodeURIComponent(login.token)}`,
+    };
+    const submitResponse = await handler(new Request("http://localhost/api/images/generations", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        prompt: "make a product image",
+        size: "1024x1024",
+        ratio: "1:1",
+        quality: "standard",
+      }),
+    }));
+    assert.equal(submitResponse.status, 200);
+    const submitPayload = await submitResponse.json();
+    assert.equal(submitPayload.job.status, "pending");
+
+    const jobResponse = await handler(new Request(`http://localhost/api/images/jobs/${submitPayload.job.id}`, {
+      headers,
+    }));
+    assert.equal(jobResponse.status, 200);
+    const jobPayload = await jobResponse.json();
+    assert.equal(jobPayload.job.status, "completed");
+    assert.equal(jobPayload.image.b64Json, "CgsM");
+
+    const current = await store.getCard(card.code);
+    assert.equal(current.usedUses, 0);
+    assert.equal(current.remainingUses, 10);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await cleanup();
+  }
+});
