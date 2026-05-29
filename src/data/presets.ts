@@ -111,7 +111,7 @@ export const imageTemplates: ImageTemplate[] = [
     defaultSize: "1024x1536",
     description: "适合详情页模块、功能解释和使用步骤配图。",
     promptBuilder: (job, preset) =>
-      `${modeRules(job)}Design a ${preset.ratio} ecommerce detail-page visual for ${clean(job.productName, "the product")}. Category: ${clean(job.category, "general merchandise")}. Communicate these product benefits visually without relying on readable text: ${clean(job.sellingPoints, "quality, durability, ease of use")}. Layout should feel like a premium marketplace product detail module, with realistic product close-ups, material texture, use-case fragments, clean spacing, ${sharedRules}. Style: ${clean(job.style, "clean editorial ecommerce")}. Platform target: ${preset.platform}, ${preset.label}. Extra request: ${clean(job.extraPrompt, "none")}.`,
+      `${modeRules(job)}Design a ${preset.ratio} single continuous ecommerce detail-page visual for ${clean(job.productName, "the product")}. Category: ${clean(job.category, "general merchandise")}. Communicate these product benefits visually without relying on readable text: ${clean(job.sellingPoints, "quality, durability, ease of use")}. Create one coherent scene with the product as the clear focus, natural material detail, integrated usage context, clean spacing, ${sharedRules}. Do not create thumbnail strips, inset panels, picture-in-picture frames, image grids, multiple sub-images, framed mini images, UI-like clickable cards, or separate preview tiles. Style: ${clean(job.style, "clean editorial ecommerce")}. Platform target: ${preset.platform}, ${preset.label}. Extra request: ${clean(job.extraPrompt, "none")}.`,
   },
   {
     id: "festival-promo",

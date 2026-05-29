@@ -100,8 +100,10 @@ export function App() {
   const [isRevisingImage, setIsRevisingImage] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [showProductNameHint, setShowProductNameHint] = useState(false);
   const [operationStatus, setOperationStatus] = useState("");
   const [revisionPrompt, setRevisionPrompt] = useState("");
+  const productNameInputRef = useRef<HTMLInputElement | null>(null);
   const referenceInputRef = useRef<HTMLInputElement | null>(null);
   const license = useCardLicense();
 
@@ -179,9 +181,11 @@ export function App() {
       return;
     }
     if (!nextJob.productName.trim()) {
-      setError("请先填写商品名称。");
+      setShowProductNameHint(true);
+      productNameInputRef.current?.focus();
       return;
     }
+    setShowProductNameHint(false);
     const imageUrls = effectiveReference ? [effectiveReference.dataUrl] : [];
     if (nextJob.mode === "reference" && imageUrls.length === 0) {
       setError("商品参考图模式需要先上传一张真实商品图。");
@@ -623,10 +627,17 @@ export function App() {
           <div className="grid gap-4 md:grid-cols-2">
             <Field label="商品名称" required>
               <input
-                className="input"
+                ref={productNameInputRef}
+                className={`input ${showProductNameHint ? "border-coral focus:border-coral focus:ring-coral/20" : ""}`}
                 value={job.productName}
-                onChange={(event) => updateJob("productName", event.target.value)}
-                placeholder="例如：无线降噪耳机"
+                onChange={(event) => {
+                  updateJob("productName", event.target.value);
+                  if (event.target.value.trim()) {
+                    setShowProductNameHint(false);
+                  }
+                }}
+                placeholder={showProductNameHint ? "请输入商品名称" : "例如：无线降噪耳机"}
+                aria-invalid={showProductNameHint}
               />
             </Field>
             <Field label="商品类目">
