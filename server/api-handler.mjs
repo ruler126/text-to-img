@@ -298,7 +298,7 @@ const resolveImageJob = async ({ store, serverApiConfig, cookies, id }) => {
 
   if (!job.upstreamTaskId) return { job: publicImageJob(job) };
 
-  const endpoint = `${normalizeBaseUrl(serverApiConfig.baseURL)}/tasks/${encodeURIComponent(job.upstreamTaskId)}`;
+  const endpoint = `${normalizeBaseUrl(serverApiConfig.baseURL)}/tasks/${encodeURIComponent(job.upstreamTaskId)}?language=zh`;
   const upstreamResponse = await fetchWithTimeout(endpoint, {
     headers: { Authorization: `Bearer ${serverApiConfig.apiKey}` },
   }, 15000, "查询图片任务");

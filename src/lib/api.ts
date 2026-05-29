@@ -190,7 +190,7 @@ const pollServerImageJob = async (
 ): Promise<{ b64Json: string; mimeType?: string }> => {
   const maxAttempts = 90;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    await sleep(attempt === 0 ? 2500 : 3000);
+    await sleep(attempt === 0 ? 10000 : 4000);
     onProgress?.(`图片生成中，正在等待结果...`);
     const response = await fetchWithTimeout(`/api/images/jobs/${encodeURIComponent(jobId)}`, {
       credentials: "same-origin",
