@@ -20,6 +20,39 @@ test("batch generation creates unique mixed six-character cards", () => {
   store.close();
 });
 
+test("admin can create custom-use expiring cards, update them, and delete them", () => {
+  const store = makeStore();
+  try {
+    const [card] = store.createCards({ totalUses: 37, count: 1, expiresInDays: 7 });
+    assert.equal(card.totalUses, 37);
+    assert.ok(card.expiresAt);
+
+    const login = store.loginCard(card.code);
+    const reservation = store.startUsage(login.token);
+    store.completeUsage(login.token, reservation.id, true);
+
+    assert.throws(() => store.updateCard(card.code, { totalUses: 0 }), HttpError);
+    assert.throws(() => store.updateCard(card.code, { totalUses: 0.5 }), HttpError);
+    assert.throws(() => store.updateCard(card.code, { totalUses: 100001 }), HttpError);
+    assert.throws(() => store.updateCard(card.code, { expiresInDays: 2 }), HttpError);
+
+    let updated = store.updateCard(card.code, { totalUses: 45, expiresInDays: null });
+    assert.equal(updated.totalUses, 45);
+    assert.equal(updated.usedUses, 1);
+    assert.equal(updated.remainingUses, 44);
+    assert.equal(updated.expiresAt, null);
+
+    updated = store.updateCard(card.code, { expiresInDays: 1 });
+    assert.ok(updated.expiresAt);
+
+    store.deleteCard(card.code);
+    assert.equal(store.getCard(card.code), null);
+    assert.throws(() => store.loginCard(card.code), HttpError);
+  } finally {
+    store.close();
+  }
+});
+
 test("login, usage success, fail, and idempotent success", () => {
   const store = makeStore();
   const [card] = store.createCards({ totalUses: 10, count: 1 });

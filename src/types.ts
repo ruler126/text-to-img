@@ -78,6 +78,7 @@ export interface CardSession {
   usedUses: number;
   remainingUses: number;
   status: "active" | "disabled";
+  expiresAt?: string | null;
 }
 
 export interface UsageReservation {

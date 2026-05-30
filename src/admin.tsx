@@ -1,23 +1,34 @@
 import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { ArrowDown, ArrowUp, ArrowUpDown, Download, Loader2, LockKeyhole, Plus, RefreshCcw } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Download, Loader2, LockKeyhole, Plus, RefreshCcw, Save, Trash2 } from "lucide-react";
 import "./styles.css";
 import type { AdminCard } from "./types";
 import { adminApi } from "./card-license/api";
 
 const useOptions = [10, 20, 30, 50, 100];
+const expiryOptions = [
+  { label: "不限期", value: "" },
+  { label: "31天", value: "31" },
+  { label: "7天", value: "7" },
+  { label: "3天", value: "3" },
+  { label: "1天", value: "1" },
+];
+const editExpiryOptions = [{ label: "保持当前", value: "keep" }, ...expiryOptions];
 type SortKey = "createdAt" | "totalUses" | "lastLoginAt";
 type SortDirection = "asc" | "desc";
 type SortState = { key: SortKey; direction: SortDirection };
+type CardDraft = { totalUses?: string; expiresInDays?: string };
 
 function AdminApp() {
   const [password, setPassword] = useState("");
   const [isAuthed, setIsAuthed] = useState(false);
   const [cards, setCards] = useState<AdminCard[]>([]);
   const [sort, setSort] = useState<SortState>({ key: "createdAt", direction: "desc" });
-  const [totalUses, setTotalUses] = useState(10);
+  const [totalUses, setTotalUses] = useState("10");
+  const [expiresInDays, setExpiresInDays] = useState("");
   const [count, setCount] = useState(10);
   const [note, setNote] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, CardDraft>>({});
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [isBusy, setIsBusy] = useState(false);
@@ -26,6 +37,7 @@ function AdminApp() {
     () => ({
       active: cards.filter((card) => card.status === "active").length,
       disabled: cards.filter((card) => card.status === "disabled").length,
+      expired: cards.filter((card) => card.expiresAt && Date.parse(card.expiresAt) <= Date.now()).length,
       remaining: cards.reduce((sum, card) => sum + card.remainingUses, 0),
     }),
     [cards],
@@ -70,6 +82,7 @@ function AdminApp() {
     setError("");
     try {
       setCards(await adminApi.listCards());
+      setDrafts({});
       setIsAuthed(true);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "读取兑换码失败。");
@@ -103,7 +116,12 @@ function AdminApp() {
     setIsBusy(true);
     setError("");
     try {
-      const created = await adminApi.createBatch({ totalUses, count, note });
+      const created = await adminApi.createBatch({
+        totalUses: Number(totalUses),
+        count,
+        note,
+        expiresInDays: expiresInDays ? Number(expiresInDays) : null,
+      });
       setCards((current) => [...created, ...current]);
       setNotice(`已生成 ${created.length} 个兑换码。`);
     } catch (caught) {
@@ -114,8 +132,50 @@ function AdminApp() {
   };
 
   const toggleStatus = async (card: AdminCard) => {
-    const next = await adminApi.updateCard(card.code, { status: card.status === "active" ? "disabled" : "active" });
-    setCards((current) => current.map((item) => (item.code === next.code ? next : item)));
+    setError("");
+    try {
+      const next = await adminApi.updateCard(card.code, { status: card.status === "active" ? "disabled" : "active" });
+      setCards((current) => current.map((item) => (item.code === next.code ? next : item)));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "更新兑换码失败。");
+    }
+  };
+
+  const updateDraft = (code: string, patch: CardDraft) => {
+    setDrafts((current) => ({
+      ...current,
+      [code]: { ...current[code], ...patch },
+    }));
+  };
+
+  const saveCardEdits = async (card: AdminCard) => {
+    setError("");
+    const draft = drafts[card.code] ?? {};
+    const nextTotalUses = Number(draft.totalUses ?? card.totalUses);
+    const nextExpiry = draft.expiresInDays ?? "keep";
+    try {
+      const next = await adminApi.updateCard(card.code, {
+        totalUses: nextTotalUses,
+        ...(nextExpiry === "keep" ? {} : { expiresInDays: nextExpiry ? Number(nextExpiry) : null }),
+      });
+      setCards((current) => current.map((item) => (item.code === next.code ? next : item)));
+      setDrafts((current) => ({ ...current, [card.code]: {} }));
+      setNotice(`已更新兑换码 ${card.code}。`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "更新兑换码失败。");
+    }
+  };
+
+  const deleteCard = async (card: AdminCard) => {
+    if (!window.confirm(`确定删除兑换码 ${card.code}？此操作不可恢复。`)) return;
+    setError("");
+    try {
+      await adminApi.deleteCard(card.code);
+      setCards((current) => current.filter((item) => item.code !== card.code));
+      setNotice(`已删除兑换码 ${card.code}。`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "删除兑换码失败。");
+    }
   };
 
   const exportCards = async (format: "json" | "csv") => {
@@ -126,6 +186,12 @@ function AdminApp() {
     link.download = filename;
     link.click();
     URL.revokeObjectURL(url);
+  };
+
+  const formatExpiry = (expiresAt?: string | null) => {
+    if (!expiresAt) return "不限期";
+    const expired = Date.parse(expiresAt) <= Date.now();
+    return `${new Date(expiresAt).toLocaleString()}${expired ? "（已过期）" : ""}`;
   };
 
   if (!isAuthed) {
@@ -187,10 +253,27 @@ function AdminApp() {
             <h2 className="text-lg font-semibold">批量生成</h2>
             <label className="block">
               <span className="mb-1.5 block text-sm font-medium text-slate-700">次数档位</span>
-              <select className="input" value={totalUses} onChange={(event) => setTotalUses(Number(event.target.value))}>
+              <input
+                className="input"
+                type="number"
+                min={1}
+                max={100000}
+                list="total-use-options"
+                value={totalUses}
+                onChange={(event) => setTotalUses(event.target.value)}
+              />
+              <datalist id="total-use-options">
                 {useOptions.map((value) => (
-                  <option key={value} value={value}>
-                    {value} 次
+                  <option key={value} value={value} />
+                ))}
+              </datalist>
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-sm font-medium text-slate-700">使用期限</span>
+              <select className="input" value={expiresInDays} onChange={(event) => setExpiresInDays(event.target.value)}>
+                {expiryOptions.map((option) => (
+                  <option key={option.value || "unlimited"} value={option.value}>
+                    {option.label}
                   </option>
                 ))}
               </select>
@@ -213,19 +296,20 @@ function AdminApp() {
 
           <section className="grid gap-3 sm:grid-cols-3">
             <Metric label="兑换码总数" value={cards.length} />
-            <Metric label="启用 / 禁用" value={`${summary.active} / ${summary.disabled}`} />
+            <Metric label="启用 / 禁用 / 过期" value={`${summary.active} / ${summary.disabled} / ${summary.expired}`} />
             <Metric label="剩余总次数" value={summary.remaining} />
           </section>
         </section>
 
         <section className="panel overflow-hidden">
           <div className="overflow-auto">
-            <table className="w-full min-w-[900px] border-collapse text-sm">
+            <table className="w-full min-w-[1180px] border-collapse text-sm">
               <thead className="bg-mist text-left text-slate-600">
                 <tr>
                   <th className="px-3 py-2">兑换码</th>
                   <SortableHeader label="次数" sortKey="totalUses" activeSort={sort} onSort={toggleSort} />
                   <th className="px-3 py-2">状态</th>
+                  <th className="px-3 py-2">使用期限</th>
                   <SortableHeader label="创建时间" sortKey="createdAt" activeSort={sort} onSort={toggleSort} />
                   <SortableHeader label="最近登录" sortKey="lastLoginAt" activeSort={sort} onSort={toggleSort} />
                   <th className="px-3 py-2">备注</th>
@@ -238,13 +322,43 @@ function AdminApp() {
                     <td className="px-3 py-2 font-semibold">{card.code}</td>
                     <td className="px-3 py-2">{card.remainingUses}/{card.totalUses}</td>
                     <td className="px-3 py-2">{card.status === "active" ? "启用" : "禁用"}</td>
+                    <td className="px-3 py-2">{formatExpiry(card.expiresAt)}</td>
                     <td className="px-3 py-2">{new Date(card.createdAt).toLocaleString()}</td>
                     <td className="px-3 py-2">{card.lastLoginAt ? new Date(card.lastLoginAt).toLocaleString() : "-"}</td>
                     <td className="px-3 py-2">{card.note || "-"}</td>
                     <td className="px-3 py-2">
-                      <button className="tiny-button w-auto px-3" onClick={() => toggleStatus(card)}>
+                      <div className="flex min-w-[360px] flex-wrap items-center gap-2">
+                        <input
+                          className="input h-9 w-24"
+                          type="number"
+                          min={card.usedUses}
+                          max={100000}
+                          value={drafts[card.code]?.totalUses ?? String(card.totalUses)}
+                          onChange={(event) => updateDraft(card.code, { totalUses: event.target.value })}
+                        />
+                        <select
+                          className="input h-9 w-28"
+                          value={drafts[card.code]?.expiresInDays ?? "keep"}
+                          onChange={(event) => updateDraft(card.code, { expiresInDays: event.target.value })}
+                        >
+                          {editExpiryOptions.map((option) => (
+                            <option key={option.value || "unlimited"} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                        <button className="tiny-button w-auto px-3" onClick={() => saveCardEdits(card)}>
+                          <Save size={14} />
+                          保存
+                        </button>
+                        <button className="tiny-button w-auto px-3" onClick={() => toggleStatus(card)}>
                         {card.status === "active" ? "禁用" : "启用"}
-                      </button>
+                        </button>
+                        <button className="tiny-button w-auto px-3 text-red-600" onClick={() => deleteCard(card)}>
+                          <Trash2 size={14} />
+                          删除
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

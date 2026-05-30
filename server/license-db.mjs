@@ -7,7 +7,8 @@ import { HttpError } from "./errors.mjs";
 const CARD_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 const NUMBERS = "23456789";
-const ALLOWED_TOTALS = new Set([10, 20, 30, 50, 100]);
+const MAX_TOTAL_USES = 100000;
+const ALLOWED_EXPIRY_DAYS = new Set([1, 3, 7, 31]);
 const RESERVATION_TTL_MS = 30 * 60 * 1000;
 
 export { HttpError };
@@ -28,6 +29,7 @@ export const makeLicenseStore = ({ dbPath = "data/cards.sqlite", sessionSecret =
       status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL,
       last_login_at TEXT,
+      expires_at TEXT,
       note TEXT NOT NULL DEFAULT ''
     );
 
@@ -67,8 +69,26 @@ export const makeLicenseStore = ({ dbPath = "data/cards.sqlite", sessionSecret =
     );
   `);
 
+  const cardColumns = new Set(db.prepare("PRAGMA table_info(cards)").all().map((column) => column.name));
+  if (!cardColumns.has("expires_at")) {
+    db.exec("ALTER TABLE cards ADD COLUMN expires_at TEXT");
+  }
+
   const now = () => new Date().toISOString();
   const future = (ms) => new Date(Date.now() + ms).toISOString();
+  const expiryFromDays = (days) => {
+    if (days === null || days === undefined || days === "") return null;
+    const value = Number(days);
+    if (!ALLOWED_EXPIRY_DAYS.has(value)) throw new HttpError(400, "不支持的使用期限。");
+    return future(value * 24 * 60 * 60 * 1000);
+  };
+  const validateTotalUses = (totalUses) => {
+    const value = Number(totalUses);
+    if (!Number.isInteger(value) || value < 1 || value > MAX_TOTAL_USES) {
+      throw new HttpError(400, "次数必须是 1 到 100000 之间的整数。");
+    }
+    return value;
+  };
   const tokenHash = (token) => createHash("sha256").update(`${sessionSecret}:${token}`).digest("hex");
   const randomToken = () => randomBytes(32).toString("base64url");
   const randomId = () => randomBytes(18).toString("base64url");
@@ -81,6 +101,7 @@ export const makeLicenseStore = ({ dbPath = "data/cards.sqlite", sessionSecret =
       usedUses: row.used_uses,
       remainingUses: Math.max(0, row.total_uses - row.used_uses),
       status: row.status,
+      expiresAt: row.expires_at ?? null,
       createdAt: row.created_at,
       lastLoginAt: row.last_login_at,
       note: row.note ?? "",
@@ -98,11 +119,14 @@ export const makeLicenseStore = ({ dbPath = "data/cards.sqlite", sessionSecret =
 
   const getCard = (code) => normalizeCard(getCardRow(code));
 
+  const isCardExpired = (card) => Boolean(card?.expires_at && new Date(card.expires_at).getTime() <= Date.now());
+
   const assertActiveUsableCard = (code) => {
     releaseExpiredReservations();
     const card = getCardRow(code);
     if (!card) throw new HttpError(404, "兑换码不存在。");
     if (card.status !== "active") throw new HttpError(403, "兑换码已被禁用。");
+    if (isCardExpired(card)) throw new HttpError(403, "兑换码已过期。");
     const pending =
       db.prepare("SELECT COUNT(*) AS count FROM usage_reservations WHERE code = ? AND status = 'pending'").get(card.code)
         .count ?? 0;
@@ -144,18 +168,19 @@ export const makeLicenseStore = ({ dbPath = "data/cards.sqlite", sessionSecret =
     throw new HttpError(500, "生成兑换码失败，请重试。");
   };
 
-  const createCards = ({ totalUses, count, note = "" }) => {
-    if (!ALLOWED_TOTALS.has(totalUses)) throw new HttpError(400, "不支持的次数档位。");
+  const createCards = ({ totalUses, count, note = "", expiresInDays = null }) => {
+    const validatedTotalUses = validateTotalUses(totalUses);
     if (!Number.isInteger(count) || count < 1 || count > 1000) throw new HttpError(400, "生成数量必须在 1 到 1000 之间。");
+    const expiresAt = expiryFromDays(expiresInDays);
     const created = [];
     const insert = db.prepare(
-      "INSERT INTO cards (code, total_uses, used_uses, status, created_at, note) VALUES (?, ?, 0, 'active', ?, ?)",
+      "INSERT INTO cards (code, total_uses, used_uses, status, created_at, expires_at, note) VALUES (?, ?, 0, 'active', ?, ?, ?)",
     );
     db.exec("BEGIN IMMEDIATE");
     try {
       for (let index = 0; index < count; index += 1) {
         const code = generateCode();
-        insert.run(code, totalUses, now(), String(note ?? "").slice(0, 200));
+        insert.run(code, validatedTotalUses, now(), expiresAt, String(note ?? "").slice(0, 200));
         created.push(getCard(code));
       }
       db.exec("COMMIT");
@@ -171,6 +196,7 @@ export const makeLicenseStore = ({ dbPath = "data/cards.sqlite", sessionSecret =
     const card = getCardRow(normalized);
     if (!card) throw new HttpError(401, "兑换码无效。");
     if (card.status !== "active") throw new HttpError(403, "兑换码已被禁用。");
+    if (isCardExpired(card)) throw new HttpError(403, "兑换码已过期。");
     if (card.total_uses - card.used_uses <= 0) throw new HttpError(409, "当前兑换码次数已用完。");
     db.prepare("UPDATE cards SET last_login_at = ? WHERE code = ?").run(now(), normalized);
     return {
@@ -185,6 +211,7 @@ export const makeLicenseStore = ({ dbPath = "data/cards.sqlite", sessionSecret =
     const card = getCard(session.code);
     if (!card) throw new HttpError(401, "授权登录已失效。");
     if (card.status !== "active") throw new HttpError(403, "兑换码已被禁用。");
+    if (card.expiresAt && new Date(card.expiresAt).getTime() <= Date.now()) throw new HttpError(403, "兑换码已过期。");
     return card;
   };
 
@@ -252,8 +279,36 @@ export const makeLicenseStore = ({ dbPath = "data/cards.sqlite", sessionSecret =
     if (!current) throw new HttpError(404, "兑换码不存在。");
     const status = patch.status === "disabled" ? "disabled" : patch.status === "active" ? "active" : current.status;
     const note = patch.note === undefined ? current.note : String(patch.note ?? "").slice(0, 200);
-    db.prepare("UPDATE cards SET status = ?, note = ? WHERE code = ?").run(status, note, normalized);
+    const totalUses = patch.totalUses === undefined ? current.totalUses : validateTotalUses(patch.totalUses);
+    if (totalUses < current.usedUses) throw new HttpError(400, "总次数不能小于已使用次数。");
+    const expiresAt = Object.prototype.hasOwnProperty.call(patch, "expiresInDays")
+      ? expiryFromDays(patch.expiresInDays)
+      : current.expiresAt;
+    db.prepare("UPDATE cards SET status = ?, note = ?, total_uses = ?, expires_at = ? WHERE code = ?").run(
+      status,
+      note,
+      totalUses,
+      expiresAt,
+      normalized,
+    );
     return getCard(normalized);
+  };
+
+  const deleteCard = (code) => {
+    const normalized = String(code ?? "").trim().toUpperCase();
+    const current = getCard(normalized);
+    if (!current) throw new HttpError(404, "兑换码不存在。");
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.prepare("DELETE FROM image_jobs WHERE code = ?").run(normalized);
+      db.prepare("DELETE FROM usage_reservations WHERE code = ?").run(normalized);
+      db.prepare("DELETE FROM sessions WHERE code = ?").run(normalized);
+      db.prepare("DELETE FROM cards WHERE code = ?").run(normalized);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
   };
 
   const normalizeImageJob = (row) => {
@@ -360,6 +415,7 @@ export const makeLicenseStore = ({ dbPath = "data/cards.sqlite", sessionSecret =
     updateImageJob,
     listCards,
     updateCard,
+    deleteCard,
     getCard,
     deleteSession,
     close,
