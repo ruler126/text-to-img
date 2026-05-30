@@ -4,11 +4,25 @@ import { HttpError } from "./errors.mjs";
 const CARD_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 const NUMBERS = "23456789";
-const ALLOWED_TOTALS = new Set([10, 20, 30, 50, 100]);
+const MAX_TOTAL_USES = 100000;
+const ALLOWED_EXPIRY_DAYS = new Set([1, 3, 7, 31]);
 const RESERVATION_TTL_MS = 30 * 60 * 1000;
 
 const now = () => new Date().toISOString();
 const future = (ms) => new Date(Date.now() + ms).toISOString();
+const expiryFromDays = (days) => {
+  if (days === null || days === undefined || days === "") return null;
+  const value = Number(days);
+  if (!ALLOWED_EXPIRY_DAYS.has(value)) throw new HttpError(400, "不支持的使用期限。");
+  return future(value * 24 * 60 * 60 * 1000);
+};
+const validateTotalUses = (totalUses) => {
+  const value = Number(totalUses);
+  if (!Number.isInteger(value) || value < 1 || value > MAX_TOTAL_USES) {
+    throw new HttpError(400, "次数必须是 1 到 100000 之间的整数。");
+  }
+  return value;
+};
 const randomToken = () => randomBytes(32).toString("base64url");
 const randomId = () => randomBytes(18).toString("base64url");
 
@@ -31,6 +45,7 @@ const safeGetJson = async (blobStore, key) => {
 };
 
 const normalizeCode = (code) => String(code ?? "").trim().toUpperCase();
+const isCardExpired = (card) => Boolean(card?.expiresAt && Date.parse(card.expiresAt) <= Date.now());
 
 const normalizeCard = (record, usedUses = 0) => {
   if (!record) return null;
@@ -41,6 +56,7 @@ const normalizeCard = (record, usedUses = 0) => {
     usedUses,
     remainingUses: Math.max(0, totalUses - usedUses),
     status: record.status,
+    expiresAt: record.expiresAt ?? null,
     createdAt: record.createdAt,
     lastLoginAt: record.lastLoginAt ?? null,
     note: record.note ?? "",
@@ -100,6 +116,7 @@ export const makeBlobLicenseStore = ({ blobStore, sessionSecret = "change-this-s
     const card = await getCard(code);
     if (!card) throw new HttpError(404, "兑换码不存在。");
     if (card.status !== "active") throw new HttpError(403, "兑换码已被禁用。");
+    if (isCardExpired(card)) throw new HttpError(403, "兑换码已过期。");
     return card;
   };
 
@@ -141,9 +158,10 @@ export const makeBlobLicenseStore = ({ blobStore, sessionSecret = "change-this-s
     throw new HttpError(500, "生成兑换码失败，请重试。");
   };
 
-  const createCards = async ({ totalUses, count, note = "" }) => {
-    if (!ALLOWED_TOTALS.has(totalUses)) throw new HttpError(400, "不支持的次数档位。");
+  const createCards = async ({ totalUses, count, note = "", expiresInDays = null }) => {
+    const validatedTotalUses = validateTotalUses(totalUses);
     if (!Number.isInteger(count) || count < 1 || count > 1000) throw new HttpError(400, "生成数量必须在 1 到 1000 之间。");
+    const expiresAt = expiryFromDays(expiresInDays);
 
     const created = [];
     for (let index = 0; index < count; index += 1) {
@@ -152,9 +170,10 @@ export const makeBlobLicenseStore = ({ blobStore, sessionSecret = "change-this-s
         const code = generateCode();
         const record = {
           code,
-          totalUses,
+          totalUses: validatedTotalUses,
           status: "active",
           createdAt: now(),
+          expiresAt,
           lastLoginAt: null,
           note: String(note ?? "").slice(0, 200),
         };
@@ -191,6 +210,7 @@ export const makeBlobLicenseStore = ({ blobStore, sessionSecret = "change-this-s
     const card = await getCard(session.code);
     if (!card) throw new HttpError(401, "授权登录已失效。");
     if (card.status !== "active") throw new HttpError(403, "兑换码已被禁用。");
+    if (isCardExpired(card)) throw new HttpError(403, "兑换码已过期。");
     return card;
   };
 
@@ -320,10 +340,49 @@ export const makeBlobLicenseStore = ({ blobStore, sessionSecret = "change-this-s
     const normalized = normalizeCode(code);
     const current = await getCardRecord(normalized);
     if (!current) throw new HttpError(404, "兑换码不存在。");
+    const currentCard = await getCard(normalized);
     const status = patch.status === "disabled" ? "disabled" : patch.status === "active" ? "active" : current.status;
     const note = patch.note === undefined ? current.note : String(patch.note ?? "").slice(0, 200);
-    await blobStore.setJSON(cardKey(normalized), { ...current, status, note });
+    const totalUses = patch.totalUses === undefined ? Number(current.totalUses) : validateTotalUses(patch.totalUses);
+    if (currentCard && totalUses < currentCard.usedUses) throw new HttpError(400, "总次数不能小于已使用次数。");
+    const expiresAt = Object.prototype.hasOwnProperty.call(patch, "expiresInDays")
+      ? expiryFromDays(patch.expiresInDays)
+      : current.expiresAt ?? null;
+    await blobStore.setJSON(cardKey(normalized), { ...current, status, note, totalUses, expiresAt });
     return getCard(normalized);
+  };
+
+  const deleteCard = async (code) => {
+    const normalized = normalizeCode(code);
+    const current = await getCardRecord(normalized);
+    if (!current) throw new HttpError(404, "兑换码不存在。");
+    const [{ blobs: usageBlobs }, { blobs: sessionBlobs }, { blobs: imageJobBlobs }] = await Promise.all([
+      blobStore.list({ prefix: usagePrefix(normalized), consistency: "strong" }),
+      blobStore.list({ prefix: "sessions/", consistency: "strong" }),
+      blobStore.list({ prefix: "image-jobs/", consistency: "strong" }),
+    ]);
+    const sessionKeys = await Promise.all(
+      sessionBlobs
+        .filter((item) => item.key.endsWith(".json"))
+        .map(async (item) => {
+          const session = await safeGetJson(blobStore, item.key);
+          return session?.code === normalized ? item.key : null;
+        }),
+    );
+    const imageJobKeys = await Promise.all(
+      imageJobBlobs
+        .filter((item) => item.key.endsWith(".json"))
+        .map(async (item) => {
+          const job = await safeGetJson(blobStore, item.key);
+          return job?.code === normalized ? item.key : null;
+        }),
+    );
+    await Promise.all([
+      ...usageBlobs.filter((item) => item.key.endsWith(".json")).map((item) => blobStore.delete(item.key)),
+      ...sessionKeys.filter(Boolean).map((key) => blobStore.delete(key)),
+      ...imageJobKeys.filter(Boolean).map((key) => blobStore.delete(key)),
+      blobStore.delete(cardKey(normalized)),
+    ]);
   };
 
   const dangerouslyClearForTests = async () => {
@@ -351,6 +410,7 @@ export const makeBlobLicenseStore = ({ blobStore, sessionSecret = "change-this-s
     updateImageJob,
     listCards,
     updateCard,
+    deleteCard,
     getCard,
     deleteSession,
     close,

@@ -41,6 +41,39 @@ test("batch generation creates unique mixed six-character cards", async () => {
   }
 });
 
+test("admin can create custom-use expiring cards, update them, and delete them", async () => {
+  const { store, cleanup } = await makeStore();
+  try {
+    const [card] = await store.createCards({ totalUses: 37, count: 1, expiresInDays: 7 });
+    assert.equal(card.totalUses, 37);
+    assert.ok(card.expiresAt);
+
+    const login = await store.loginCard(card.code);
+    const reservation = await store.startUsage(login.token);
+    await store.completeUsage(login.token, reservation.id, true);
+
+    await assert.rejects(() => store.updateCard(card.code, { totalUses: 0 }), HttpError);
+    await assert.rejects(() => store.updateCard(card.code, { totalUses: 0.5 }), HttpError);
+    await assert.rejects(() => store.updateCard(card.code, { totalUses: 100001 }), HttpError);
+    await assert.rejects(() => store.updateCard(card.code, { expiresInDays: 2 }), HttpError);
+
+    let updated = await store.updateCard(card.code, { totalUses: 45, expiresInDays: null });
+    assert.equal(updated.totalUses, 45);
+    assert.equal(updated.usedUses, 1);
+    assert.equal(updated.remainingUses, 44);
+    assert.equal(updated.expiresAt, null);
+
+    updated = await store.updateCard(card.code, { expiresInDays: 1 });
+    assert.ok(updated.expiresAt);
+
+    await store.deleteCard(card.code);
+    assert.equal(await store.getCard(card.code), null);
+    await assert.rejects(() => store.loginCard(card.code), HttpError);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("login, usage success, fail, and idempotent success", async () => {
   const { store, cleanup } = await makeStore();
   try {

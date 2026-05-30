@@ -56,20 +56,27 @@ export const adminApi = {
     const payload = await request<{ cards: AdminCard[] }>("/api/admin/cards");
     return payload.cards;
   },
-  createBatch: async ({ totalUses, count, note }: { totalUses: number; count: number; note: string }) => {
+  createBatch: async ({ totalUses, count, note, expiresInDays }: { totalUses: number; count: number; note: string; expiresInDays: number | null }) => {
     const payload = await request<{ cards: AdminCard[] }>("/api/admin/cards/batch", {
       method: "POST",
-      body: JSON.stringify({ totalUses, count, note }),
+      body: JSON.stringify({ totalUses, count, note, expiresInDays }),
     });
     return payload.cards;
   },
-  updateCard: async (code: string, patch: Pick<AdminCard, "status"> | Pick<AdminCard, "note">) => {
+  updateCard: async (
+    code: string,
+    patch: Partial<Pick<AdminCard, "status" | "note" | "totalUses">> & { expiresInDays?: number | null },
+  ) => {
     const payload = await request<{ card: AdminCard }>(`/api/admin/cards/${encodeURIComponent(code)}`, {
       method: "PATCH",
       body: JSON.stringify(patch),
     });
     return payload.card;
   },
+  deleteCard: async (code: string) =>
+    request<{ ok: true }>(`/api/admin/cards/${encodeURIComponent(code)}`, {
+      method: "DELETE",
+    }),
   exportCards: async (format: "json" | "csv") => {
     const response = await fetch("/api/admin/cards/export", {
       method: "POST",

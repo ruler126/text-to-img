@@ -451,13 +451,20 @@ export const createApiHandler = ({
     }
     if (request.method === "POST" && url.pathname === "/api/admin/cards/batch") {
       await store.requireAdminSession(cookies.admin_session);
-      return response(200, { cards: await store.createCards({ totalUses: Number(body.totalUses), count: Number(body.count), note: body.note }) });
+      return response(200, {
+        cards: await store.createCards({
+          totalUses: Number(body.totalUses),
+          count: Number(body.count),
+          note: body.note,
+          expiresInDays: body.expiresInDays,
+        }),
+      });
     }
     if (request.method === "POST" && url.pathname === "/api/admin/cards/export") {
       await store.requireAdminSession(cookies.admin_session);
       const cards = await store.listCards();
       if (body.format === "csv") {
-        const header = ["code", "totalUses", "usedUses", "remainingUses", "status", "createdAt", "lastLoginAt", "note"];
+        const header = ["code", "totalUses", "usedUses", "remainingUses", "status", "createdAt", "expiresAt", "lastLoginAt", "note"];
         const rows = cards.map((card) => header.map((key) => csvEscape(card[key])).join(","));
         return response(200, [header.join(","), ...rows].join("\n"), {
           "Content-Type": "text/csv; charset=utf-8",
@@ -470,6 +477,11 @@ export const createApiHandler = ({
     if (request.method === "PATCH" && adminCardMatch) {
       await store.requireAdminSession(cookies.admin_session);
       return response(200, { card: await store.updateCard(adminCardMatch[1], body) });
+    }
+    if (request.method === "DELETE" && adminCardMatch) {
+      await store.requireAdminSession(cookies.admin_session);
+      await store.deleteCard(adminCardMatch[1]);
+      return response(200, { ok: true });
     }
 
     throw new HttpError(404, "接口不存在。");
